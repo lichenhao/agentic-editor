@@ -6,11 +6,22 @@ interface MessageBubbleProps {
 
 export function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === 'user'
+  const isSystem = message.role === 'system'
+
+  // 系统消息渲染 - 居中卡片样式
+  if (isSystem) {
+    return (
+      <div className="message-bubble message-system">
+        <div className="message-system-content">
+          {message.content}
+        </div>
+      </div>
+    )
+  }
 
   // 获取Agent配置
   const agentConfig = message.employeeId ? AGENT_CONFIG[message.employeeId] : null
   const displayName = isUser ? '用户' : (agentConfig?.name || 'Agent')
-  const avatar = isUser ? '👤' : (agentConfig?.avatar || '🤖')
   const color = agentConfig?.color || '#6b7280'
 
   const formatTime = (dateStr: string) => {
@@ -20,9 +31,6 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
   return (
     <div className={`message-bubble ${isUser ? 'message-user' : 'message-agent'}`}>
-      <div className="message-avatar" style={{ backgroundColor: isUser ? '#6b7280' : color }}>
-        {avatar}
-      </div>
       <div className="message-content-wrapper">
         <div className="message-header">
           <span className="message-author" style={{ color }}>

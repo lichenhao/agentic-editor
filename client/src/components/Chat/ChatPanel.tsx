@@ -8,9 +8,6 @@ interface ChatPanelProps {
   onSendMessage: (content: string) => void
   onLoadMore?: () => void
   onAttach?: () => void
-  onCommand?: () => void
-  onToggleLeft?: () => void
-  onToggleRight?: () => void
   hasMore?: boolean
   isLoading?: boolean
   isConnected?: boolean
@@ -20,6 +17,9 @@ interface ChatPanelProps {
   attachedFile?: { name: string; status: 'uploading' | 'ready' | 'error' } | null
   sessionTitle?: string
   tasks?: TaskInfo[]
+  thinkingStatus?: { stage: string; content: string } | null
+  onToggleLeft?: () => void
+  onToggleRight?: () => void
 }
 
 export function ChatPanel({
@@ -27,9 +27,6 @@ export function ChatPanel({
   onSendMessage,
   onLoadMore,
   onAttach,
-  onCommand,
-  onToggleLeft,
-  onToggleRight,
   hasMore,
   isLoading,
   isConnected,
@@ -38,7 +35,10 @@ export function ChatPanel({
   tokenUsage,
   attachedFile,
   sessionTitle = 'AI 短剧助手',
-  tasks = []
+  tasks = [],
+  thinkingStatus = null,
+  onToggleLeft,
+  onToggleRight
 }: ChatPanelProps) {
   return (
     <div className="chat-panel">
@@ -69,21 +69,24 @@ export function ChatPanel({
         hasMore={hasMore}
         onLoadMore={onLoadMore}
         isLoading={isLoading}
+        thinkingStatus={thinkingStatus}
       />
 
       {/* 任务进度抽屉 - 仅在有待办任务时显示 */}
       {tasks.length > 0 && <TaskProgressDrawer tasks={tasks} />}
 
-      <MessageInput
-        onSend={onSendMessage}
-        onAttach={onAttach}
-        onCommand={onCommand}
-        disabled={disabled || !isConnected || isUploading}
-        isUploading={isUploading}
-        placeholder={isConnected ? '输入消息，按 Enter 发送...' : '连接中...'}
-        tokenUsage={tokenUsage}
-        attachedFile={attachedFile}
-      />
+      {/* 输入区域容器 - 控制上下左右间距 */}
+      <div className="input-area-wrapper">
+        <MessageInput
+          onSend={onSendMessage}
+          onAttach={onAttach}
+          disabled={disabled || !isConnected || isUploading}
+          isUploading={isUploading}
+          placeholder={isConnected ? '输入消息，按 Enter 发送...' : '连接中...'}
+          tokenUsage={tokenUsage}
+          attachedFile={attachedFile}
+        />
+      </div>
     </div>
   )
 }

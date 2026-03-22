@@ -8,6 +8,7 @@
   flex: 1;
   overflow: hidden;
   position: relative;
+  height: 100%;
 }
 
 /* ============ 左侧栏 ============ */
@@ -48,7 +49,8 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  min-width: 400px; /* 中间区域最小宽度 */
+  min-width: 400px;
+  min-height: 0; /* 关键：允许 flex 子元素收缩 */
 }
 
 /* ============ 拖拽手柄 ============ */

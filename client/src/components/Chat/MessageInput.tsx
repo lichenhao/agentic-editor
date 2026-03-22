@@ -78,72 +78,70 @@ export function MessageInput({
       <div className="input-actions-row">
         {/* 左侧按钮组 */}
         <div className="action-buttons-left">
-          {/* 附件上传 */}
+          {/* 附件上传 - + 图标 */}
           <button
             className="action-btn"
             onClick={onAttach}
             disabled={disabled || isUploading}
-            title={isUploading ? '上传中...' : '上传小说文件'}
+            title={isUploading ? '上传中...' : '上传文件'}
           >
             {isUploading ? (
               <span className="upload-spinner">⏳</span>
             ) : (
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+                <path d="M12 5v14M5 12h14" />
               </svg>
             )}
-            <span>{isUploading ? '上传中' : '附件'}</span>
           </button>
 
-          {/* 指令按钮 - /符号 */}
+          {/* 指令按钮 - / 图标 */}
           <button
             className="action-btn"
             onClick={onCommand}
             disabled={disabled}
             title="指令模式 (预留)"
           >
-            <span className="command-icon">/</span>
-            <span>指令</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M4 4h4v4H4zM16 4h4v4h-4zM4 16h4v4H4zM16 16h4v4h-4zM9 9h6M9 12h6M9 15h6" />
+            </svg>
           </button>
 
-          {/* 上下文状态 */}
+          {/* 分割线 */}
+          <span className="action-divider">|</span>
+
+          {/* 上下文状态 - 环形百分比图标 */}
           <div className="context-status" title="上下文 token 使用情况">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="12" cy="12" r="10" />
               <path d="M12 6v6l4 2" />
+              <circle cx="12" cy="12" r="3" fill="currentColor" />
             </svg>
             {tokenUsage ? (
-              <span className="token-usage">
-                {tokenUsage.used.toLocaleString()} / {tokenUsage.total.toLocaleString()}
-                <span className="token-percent">({tokenPercent}%)</span>
-              </span>
+              <span className="token-usage">{tokenPercent}%</span>
             ) : (
-              <span className="token-usage">上下文</span>
+              <span className="token-usage">-</span>
             )}
           </div>
 
           {/* 文件附件指示器 */}
           {attachedFile && (
-            <>
-              <span className="attachment-divider">|</span>
-              <div
-                className={`attachment-indicator ${attachedFile.status}`}
-                title={attachedFile.status === 'uploading' ? '上传中...' : attachedFile.status === 'ready' ? `已上传: ${attachedFile.name}` : '上传失败'}
-              >
-                {attachedFile.status === 'uploading' ? (
-                  <span className="upload-spinner-small">⏳</span>
-                ) : attachedFile.status === 'ready' ? (
-                  <span className="file-icon">📎</span>
-                ) : (
-                  <span className="file-icon error">⚠️</span>
-                )}
-                <span className="file-name">{attachedFile.name}</span>
-              </div>
-            </>
+            <div
+              className={`attachment-indicator ${attachedFile.status}`}
+              title={attachedFile.status === 'uploading' ? '上传中...' : attachedFile.status === 'ready' ? `已上传: ${attachedFile.name}` : '上传失败'}
+            >
+              {attachedFile.status === 'uploading' ? (
+                <span className="upload-spinner-small">⏳</span>
+              ) : attachedFile.status === 'ready' ? (
+                <span className="file-icon">📎</span>
+              ) : (
+                <span className="file-icon error">⚠️</span>
+              )}
+              <span className="file-name">{attachedFile.name}</span>
+            </div>
           )}
         </div>
 
-        {/* 发送按钮 - 右对齐 */}
+        {/* 发送按钮 - 右对齐，使用向上箭头 */}
         <button
           onClick={handleSend}
           disabled={disabled || !content.trim()}
@@ -151,7 +149,7 @@ export function MessageInput({
           title="发送 (Enter)"
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
+            <path d="M12 19V5M5 12l7-7 7 7" />
           </svg>
         </button>
       </div>

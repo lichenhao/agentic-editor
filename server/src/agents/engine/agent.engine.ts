@@ -129,8 +129,14 @@ export const agentEngine = {
         metadata: result.output
       })
 
-      // 6. 发送完成事件
-      sendEvent({ type: 'done', summary: result.message || '处理完成' })
+      // 6. 发送完成事件 - 只有不需要用户介入时才发送
+      const requiresUserApproval = result.requiresApproval ||
+        (result.output && result.output.waitingApproval)
+      if (!requiresUserApproval) {
+        sendEvent({ type: 'done', summary: result.message || '处理完成' })
+      } else {
+        console.log('[AgentEngine] Skipping done event - waiting for user approval')
+      }
 
     } catch (error: any) {
       console.error('[AgentEngine] Error:', error)

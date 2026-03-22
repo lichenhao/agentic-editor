@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { sessionApi, productApi, messageApi, uploadApi } from './services/api'
+import { getInstance, onMessage, send, onConnectionChange, loadSessionData } from './services/ws-singleton'
 import { ChatPanel } from './components/Chat/ChatPanel'
 import { Modal } from './components/Layout/Modal'
-import { ResizableLayout } from './components/Layout/ResizableLayout'
 import { Message, WorkProduct, Session } from './types'
 import { TaskInfo } from './components/Task/TaskProgressDrawer'
 import './styles/design-tokens.css'
@@ -10,6 +10,13 @@ import './styles/global.css'
 import './App.css'
 
 function App() {
+  // ============ 防重复加载 ============
+  const initializedRef = useRef(false)
+
+  // ============ 布局状态 ============
+  // left: 左中布局, right: 中右布局, none: 只显示中间
+  const [layout, setLayout] = useState<'left' | 'right' | 'none'>('none')
+
   // ============ 状态管理 ============
   const [sessions, setSessions] = useState<Session[]>([])
   const [currentSession, setCurrentSession] = useState<Session | null>(null)
@@ -20,10 +27,6 @@ function App() {
 
   // 产物状态 (使用 HTTP 加载)
   const [products, setProducts] = useState<WorkProduct[]>([])
-
-  // 侧边栏状态 - 已移至 ResizableLayout 组件管理
-  // const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false)
-  // const [rightSidebarCollapsed, setRightSidebarCollapsed] = useState(true)
 
   // 弹窗状态
   const [showSettingsModal, setShowSettingsModal] = useState(false)
@@ -36,34 +39,235 @@ function App() {
   const [isUploading, setIsUploading] = useState(false)
   const [attachedFile, setAttachedFile] = useState<{ name: string; status: 'uploading' | 'ready' | 'error' } | null>(null)
 
-  // WebSocket 状态 (仅用于聊天)
-  const [ws, setWs] = useState<WebSocket | null>(null)
+  // WebSocket 状态（从单例获取）
   const [isConnected, setIsConnected] = useState(false)
 
   // 任务状态
   const [tasks, setTasks] = useState<TaskInfo[]>([])
 
-  // ============ 加载会话列表 (HTTP) ============
-  const loadSessions = useCallback(async () => {
-    try {
-      const data = await sessionApi.history()
-      if (data.sessions) {
-        setSessions(data.sessions)
-        if (data.sessions.length > 0 && !currentSession) {
-          selectSession(data.sessions[0])
+  // Agent 思考状态（用于显示状态卡片）
+  const [thinkingStatus, setThinkingStatus] = useState<{ stage: string; content: string } | null>(null)
+
+  // ============ 从 URL 获取 sessionId ============
+  const getSessionIdFromUrl = useCallback((): string | null => {
+    // 支持 /chat/:sessionId 或 ?session=:sessionId
+    const path = window.location.pathname
+    const match = path.match(/\/chat\/(.+)/)
+    if (match) return match[1]
+
+    const params = new URLSearchParams(window.location.search)
+    return params.get('session')
+  }, [])
+
+  // ============ 根据 sessionId 加载数据 ============
+  const loadSessionById = useCallback(async (sessionId: string) => {
+    // 查找 session 对象
+    const session = sessions.find(s => s.id === sessionId)
+    if (session) {
+      setCurrentSession(session)
+    }
+
+    // 使用单例加载数据
+    await loadSessionData(sessionId, {
+      onMessages: (msgs) => {
+        setMessages(msgs)
+      },
+      onProducts: (prods) => {
+        setProducts(prods)
+      },
+      onSessions: (sessList) => {
+        setSessions(sessList)
+        // 如果没找到 session，尝试从加载的列表中找
+        if (!session && sessList.length > 0) {
+          const found = sessList.find((s: Session) => s.id === sessionId)
+          if (found) setCurrentSession(found)
         }
       }
-    } catch (err) {
-      console.error('Failed to load sessions:', err)
-    }
-  }, [currentSession])
+    })
 
+    // 建立 WebSocket 连接（单例会自动处理复用）
+    getInstance(sessionId)
+  }, [sessions])
+
+  // ============ 初始化 ============
   useEffect(() => {
-    loadSessions()
+    if (initializedRef.current) return
+    initializedRef.current = true
+
+    const sessionId = getSessionIdFromUrl()
+
+    if (sessionId) {
+      // URL 有 sessionId，先加载会话列表（用于侧边栏显示）
+      // 然后加载指定 session 的数据
+      sessionApi.history().then(data => {
+        if (data.sessions) {
+          setSessions(data.sessions)
+          loadSessionById(sessionId)
+        }
+      }).catch(err => {
+        console.error('Failed to load sessions:', err)
+        // 即使会话列表加载失败，也尝试加载指定 session
+        loadSessionById(sessionId)
+      })
+    }
+    // URL 无 sessionId → 空白首页，不加载任何数据
+  }, [getSessionIdFromUrl, loadSessionById])
+
+  // ============ WebSocket 消息处理 ============
+  useEffect(() => {
+    // 注册消息处理器
+    const unsubscribe = onMessage((data: any) => {
+      switch (data.type) {
+        case 'session_joined':
+          if (data.messages && Array.isArray(data.messages)) {
+            const msgs = data.messages.map((m: any) => ({
+              ...m,
+              order: String(m.order)
+            })).sort((a: Message, b: Message) => {
+              const orderA = BigInt(a.order || '0')
+              const orderB = BigInt(b.order || '0')
+              return orderA < orderB ? -1 : orderA > orderB ? 1 : 0
+            })
+            setMessages(msgs)
+          }
+          break
+
+        case 'thinking':
+          // Agent 正在工作中，显示状态卡片
+          if (data.content) {
+            setThinkingStatus({
+              stage: data.stage || '思考中',
+              content: data.content
+            })
+          }
+          break
+
+        case 'message':
+          // 收到 Agent 消息 - 只有包含有效内容才渲染
+          console.log('[WS] Received message:', data)
+          if (data.id && data.content) {
+            setMessages(prev => {
+              const newMsg: Message = {
+                id: data.id,
+                role: data.role || 'assistant',
+                content: data.content,
+                employeeId: data.employeeId,
+                createdAt: data.createdAt || new Date().toISOString(),
+                order: String(data.order || Date.now())
+              }
+              const order = BigInt(newMsg.order)
+              const index = prev.findIndex(m => BigInt(m.order || '0') > order)
+              if (index === -1) return [...prev, newMsg]
+              return [...prev.slice(0, index), newMsg, ...prev.slice(index)]
+            })
+          }
+          break
+
+        case 'done':
+          // 完成，隐藏状态卡片 - 不渲染到消息列表
+          console.log('[WS] Received done:', data)
+          setThinkingStatus(null)
+          break
+
+        case 'error':
+          // 错误
+          break
+
+        // 任务相关消息
+        case 'task_created':
+          setTasks(prev => [...prev, {
+            id: data.task.id,
+            name: data.task.name,
+            type: data.task.type,
+            status: data.task.status,
+            assigneeType: data.task.assigneeType
+          }])
+          break
+
+        case 'task_started':
+          setTasks(prev => prev.map(t =>
+            t.id === data.taskId ? { ...t, status: 'IN_PROGRESS', startedAt: new Date().toISOString() } : t
+          ))
+          break
+
+        case 'task_progress':
+          // 更新任务进度百分比
+          setTasks(prev => prev.map(t =>
+            t.id === data.taskId
+              ? { ...t, progress: data.progress, progressMessage: data.message }
+              : t
+          ))
+          break
+
+        case 'task_completed':
+          setTasks(prev => prev.map(t =>
+            t.id === data.taskId ? { ...t, status: 'COMPLETED', completedAt: new Date().toISOString() } : t
+          ))
+          break
+
+        case 'task_failed':
+          setTasks(prev => prev.map(t =>
+            t.id === data.taskId ? { ...t, status: 'FAILED' } : t
+          ))
+          break
+
+        case 'task_waiting_approval':
+          setTasks(prev => prev.map(t =>
+            t.id === data.taskId ? { ...t, status: 'WAITING_APPROVAL' } : t
+          ))
+          break
+
+        case 'tasks_loaded':
+          if (data.tasks && Array.isArray(data.tasks)) {
+            setTasks(data.tasks.map((t: any) => ({
+              id: t.id,
+              name: t.name,
+              type: t.type,
+              status: t.status,
+              assigneeType: t.assigneeType,
+              startedAt: t.startedAt,
+              completedAt: t.completedAt
+            })))
+          }
+          break
+
+        case 'history_loaded':
+          if (data.messages && Array.isArray(data.messages)) {
+            const newMessages = data.messages.map((m: any) => ({
+              ...m,
+              order: String(m.order)
+            }))
+            setMessages(prev => {
+              const existingIds = new Set(prev.map(m => m.id))
+              const unique = newMessages.filter((m: Message) => !existingIds.has(m.id))
+              return [...prev, ...unique].sort((a: Message, b: Message) => {
+                const orderA = BigInt(a.order || '0')
+                const orderB = BigInt(b.order || '0')
+                return orderA < orderB ? -1 : orderA > orderB ? 1 : 0
+              })
+            })
+            setHasMore(data.hasMore)
+          }
+          break
+      }
+    })
+
+    // 注册连接状态变化
+    const unsubscribeConnection = onConnectionChange((connected) => {
+      setIsConnected(connected)
+    })
+
+    return () => {
+      unsubscribe()
+      unsubscribeConnection()
+    }
   }, [])
 
   // ============ 选择会话 ============
   const selectSession = useCallback(async (session: Session) => {
+    // 已经是当前会话，不做处理
+    if (currentSession?.id === session.id) return
+
     setCurrentSession(session)
 
     // 从 metadata 获取 projectId
@@ -95,167 +299,19 @@ function App() {
       }
     }
 
-    // 连接 WebSocket (仅用于实时聊天)
-    connectWebSocket(session.id)
-  }, [])
-
-  // ============ WebSocket 连接 (仅聊天) ============
-  const connectWebSocket = useCallback((sessionId: string) => {
-    if (ws) {
-      ws.close()
-    }
-
-    const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000'
-    const wsUrl = `${API_BASE.replace('http', 'ws')}/ws`
-    const socket = new WebSocket(wsUrl)
-
-    socket.onopen = () => {
-      console.log('[Chat WS] Connected')
-      setIsConnected(true)
-      socket.send(JSON.stringify({ type: 'join_session', sessionId }))
-    }
-
-    socket.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data)
-        handleWsMessage(data)
-      } catch (err) {
-        console.error('[Chat WS] Parse error:', err)
-      }
-    }
-
-    socket.onclose = () => {
-      console.log('[Chat WS] Disconnected')
-      setIsConnected(false)
-    }
-
-    setWs(socket)
-  }, [])
-
-  // ============ 处理 WebSocket 消息 ============
-  const handleWsMessage = useCallback((data: any) => {
-    switch (data.type) {
-      case 'session_joined':
-        if (data.messages && Array.isArray(data.messages)) {
-          const msgs = data.messages.map((m: any) => ({
-            ...m,
-            order: String(m.order)
-          })).sort((a: Message, b: Message) => {
-            const orderA = BigInt(a.order || '0')
-            const orderB = BigInt(b.order || '0')
-            return orderA < orderB ? -1 : orderA > orderB ? 1 : 0
-          })
-          setMessages(msgs)
-        }
-        break
-
-      case 'thinking':
-        // Agent 正在工作中，通过任务进度显示
-        break
-
-      case 'message':
-        // 收到 Agent 消息
-        setMessages(prev => {
-          const newMsg: Message = {
-            id: data.id,
-            role: data.role,
-            content: data.content,
-            employeeId: data.employeeId,
-            createdAt: data.createdAt || new Date().toISOString(),
-            order: String(data.order || Date.now())
-          }
-          const order = BigInt(newMsg.order)
-          const index = prev.findIndex(m => BigInt(m.order || '0') > order)
-          if (index === -1) return [...prev, newMsg]
-          return [...prev.slice(0, index), newMsg, ...prev.slice(index)]
-        })
-        break
-
-      case 'done':
-        // 完成
-        break
-
-      case 'error':
-        // 错误
-        break
-
-      // 任务相关消息
-      case 'task_created':
-        setTasks(prev => [...prev, {
-          id: data.task.id,
-          name: data.task.name,
-          type: data.task.type,
-          status: data.task.status,
-          assigneeType: data.task.assigneeType
-        }])
-        break
-
-      case 'task_started':
-        setTasks(prev => prev.map(t =>
-          t.id === data.taskId ? { ...t, status: 'IN_PROGRESS', startedAt: new Date().toISOString() } : t
-        ))
-        break
-
-      case 'task_completed':
-        setTasks(prev => prev.map(t =>
-          t.id === data.taskId ? { ...t, status: 'COMPLETED', completedAt: new Date().toISOString() } : t
-        ))
-        break
-
-      case 'task_failed':
-        setTasks(prev => prev.map(t =>
-          t.id === data.taskId ? { ...t, status: 'FAILED' } : t
-        ))
-        break
-
-      case 'task_waiting_approval':
-        setTasks(prev => prev.map(t =>
-          t.id === data.taskId ? { ...t, status: 'WAITING_APPROVAL' } : t
-        ))
-        break
-
-      case 'tasks_loaded':
-        if (data.tasks && Array.isArray(data.tasks)) {
-          setTasks(data.tasks.map((t: any) => ({
-            id: t.id,
-            name: t.name,
-            type: t.type,
-            status: t.status,
-            assigneeType: t.assigneeType,
-            startedAt: t.startedAt,
-            completedAt: t.completedAt
-          })))
-        }
-        break
-
-      case 'history_loaded':
-        if (data.messages && Array.isArray(data.messages)) {
-          const newMessages = data.messages.map((m: any) => ({
-            ...m,
-            order: String(m.order)
-          }))
-          setMessages(prev => {
-            const existingIds = new Set(prev.map(m => m.id))
-            const unique = newMessages.filter((m: Message) => !existingIds.has(m.id))
-            return [...prev, ...unique].sort((a: Message, b: Message) => {
-              const orderA = BigInt(a.order || '0')
-              const orderB = BigInt(b.order || '0')
-              return orderA < orderB ? -1 : orderA > orderB ? 1 : 0
-            })
-          })
-          setHasMore(data.hasMore)
-        }
-        break
-    }
-  }, [])
+    // 切换 session - 单例会发送 join_session 消息
+    getInstance(session.id)
+  }, [currentSession])
 
   // ============ 创建新会话 (HTTP) ============
   const createSession = async () => {
     try {
       const data = await sessionApi.create(undefined, `新项目_${Date.now()}`)
       if (data.session) {
-        await loadSessions()
-        selectSession(data.session)
+        // 更新 URL
+        window.history.pushState(null, '', `/chat/${data.session.id}`)
+
+        await loadSessionById(data.session.id)
       }
     } catch (err) {
       console.error('Failed to create session:', err)
@@ -277,9 +333,18 @@ function App() {
         setShowCreateModal(false)
         setNewProjectName('')
         setNewProjectDesc('')
-        // 加载会话列表并选择新会话
-        await loadSessions()
-        selectSession(data.session)
+
+        // 更新 URL
+        window.history.pushState(null, '', `/chat/${data.session.id}`)
+
+        // 加载新会话数据
+        await loadSessionById(data.session.id)
+
+        // 刷新会话列表
+        const historyRes = await sessionApi.history()
+        if (historyRes.sessions) {
+          setSessions(historyRes.sessions)
+        }
       }
     } catch (err) {
       console.error('Failed to create project:', err)
@@ -305,8 +370,14 @@ function App() {
         setCurrentSession(null)
         setMessages([])
         setProducts([])
+        // 清除 URL
+        window.history.pushState(null, '', '/')
       }
-      await loadSessions()
+      // 刷新会话列表
+      const historyRes = await sessionApi.history()
+      if (historyRes.sessions) {
+        setSessions(historyRes.sessions)
+      }
     } catch (err) {
       console.error('Failed to delete session:', err)
     }
@@ -314,27 +385,40 @@ function App() {
 
   // ============ 发送消息 (WS) ============
   const handleSendMessage = useCallback((content: string) => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      console.warn('[Chat WS] Not connected')
+    // 如果没有当前会话，需要先创建
+    if (!currentSession) {
+      // 自动创建会话
+      createSession().then(() => {
+        // 延迟一点等待会话创建完成
+        setTimeout(() => {
+          send('message', { content })
+        }, 100)
+      })
       return
     }
-    ws.send(JSON.stringify({ type: 'message', content }))
-  }, [ws])
+
+    const success = send('message', { content, sessionId: currentSession.id })
+    if (!success) {
+      console.warn('[Chat] Failed to send message')
+    }
+
+    // 发送消息后清除附件状态
+    setAttachedFile(null)
+  }, [currentSession])
 
   // ============ 加载更多消息 (WS) ============
   const handleLoadMore = useCallback(() => {
-    if (!hasMore || !currentSession || !ws || ws.readyState !== WebSocket.OPEN) return
+    if (!hasMore || !currentSession) return
 
     const oldestMsg = messages[0]
     if (oldestMsg) {
-      ws.send(JSON.stringify({
-        type: 'load_history',
+      send('load_history', {
         sessionId: currentSession.id,
         before: oldestMsg.id,
         limit: 50
-      }))
+      })
     }
-  }, [hasMore, currentSession, messages, ws])
+  }, [hasMore, currentSession, messages])
 
   // ============ 刷新产物 (HTTP) ============
   const handleRefreshProducts = useCallback(async () => {
@@ -387,123 +471,106 @@ function App() {
     input.click()
   }, [])
 
-  // ============ 组件卸载时断开连接 ============
-  useEffect(() => {
-    return () => {
-      if (ws) {
-        ws.close()
-      }
-    }
-  }, [ws])
-
   // ============ 渲染 ============
   const metadata = currentSession?.metadata as any
   const projectName = metadata?.projectName || '未命名项目'
 
   return (
-    <div className="app">
-      {/* 核心聊天区域 - 三栏布局 */}
-      <main className="app-main">
-        <ResizableLayout
-          leftWidth={200}
-          rightWidth={360}
-          minCenterWidth={400}
-          minSideWidth={300}
-          onLeftToggle={() => {}}
-          onRightToggle={() => {}}
-          leftPanel={
-            <>
-              <div className="project-list">
-                {sessions.map((session) => {
-                  const m = session.metadata as any
-                  return (
-                    <div
-                      key={session.id}
-                      className={`project-item ${currentSession?.id === session.id ? 'active' : ''}`}
-                      onClick={() => selectSession(session)}
-                    >
-                      <span className="project-item-icon">📁</span>
-                      <div className="project-item-info">
-                        <span className="project-item-name">{m?.projectName || '未命名'}</span>
-                        <span className="project-item-date">
-                          {new Date(session.createdAt).toLocaleDateString()}
-                        </span>
-                      </div>
-                      <button
-                        className="project-delete-btn"
-                        onClick={handleDeleteClick(session.id)}
-                        title="删除项目"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  )
-                })}
-                <button className="new-project-btn" onClick={() => setShowCreateModal(true)}>
-                  + 新建项目
-                </button>
-              </div>
-            </>
-          }
-          centerPanel={
-            currentSession ? (
-              <ChatPanel
-                messages={messages}
-                onSendMessage={handleSendMessage}
-                onLoadMore={handleLoadMore}
-                onAttach={handleAttach}
-                onCommand={() => {}}
-                onToggleLeft={() => {}}
-                onToggleRight={() => {}}
-                hasMore={hasMore}
-                isConnected={isConnected}
-                isUploading={isUploading}
-                tokenUsage={{ used: 4000, total: 100000 }}
-                attachedFile={attachedFile}
-                sessionTitle={projectName}
-                tasks={tasks}
-              />
-            ) : (
-              <div className="no-session">
-                <div className="no-session-content">
-                  <span className="no-session-icon">💬</span>
-                  <p>选择一个项目开始对话</p>
-                  <button className="btn btn-primary" onClick={createSession}>
-                    创建新项目
+    <>
+      {/* 左侧栏 - 项目列表 (左中布局时显示) */}
+      {layout === 'left' && (
+        <aside className="aside-left">
+          <div className="project-list">
+            {sessions.map((session) => {
+              const m = session.metadata as any
+              return (
+                <div
+                  key={session.id}
+                  className={`project-item ${currentSession?.id === session.id ? 'active' : ''}`}
+                  onClick={() => selectSession(session)}
+                >
+                  <span className="project-item-icon">📁</span>
+                  <div className="project-item-info">
+                    <span className="project-item-name">{m?.projectName || '未命名'}</span>
+                    <span className="project-item-date">
+                      {new Date(session.createdAt).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <button
+                    className="project-delete-btn"
+                    onClick={handleDeleteClick(session.id)}
+                    title="删除项目"
+                  >
+                    ×
                   </button>
                 </div>
-              </div>
-            )
-          }
-          rightPanel={
-            products.length > 0 && (
-              <>
-                <div className="sidebar-header">
-                  <span>工作产物 ({products.length})</span>
-                  <button className="sidebar-toggle" onClick={handleRefreshProducts} title="刷新">🔄</button>
-                </div>
-                <div className="product-list">
-                  {products.map((product) => (
-                    <div key={product.id} className="product-item">
-                      <span className="product-item-icon">
-                        {product.type === 'IMAGE' ? '🖼️' :
-                         product.type === 'VIDEO' ? '🎬' :
-                         product.type === 'TEXT' ? '📄' : '📦'}
-                      </span>
-                      <div className="product-item-info">
-                        <span className="product-item-name">{product.name}</span>
-                        <span className="product-item-meta">
-                          {product.creatorAgentId} · {new Date(product.createdAt).toLocaleDateString()}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )
-          }
-        />
+              )
+            })}
+          </div>
+          <button className="new-project-btn" onClick={() => setShowCreateModal(true)}>
+            + 新建项目
+          </button>
+        </aside>
+      )}
+
+      {/* 中间 - 聊天区域 (始终显示) */}
+      <main className={`app-main ${layout === 'right' ? 'app-main-narrow' : ''}`}>
+        {currentSession ? (
+          <ChatPanel
+            messages={messages}
+            onSendMessage={handleSendMessage}
+            onLoadMore={handleLoadMore}
+            onAttach={handleAttach}
+            hasMore={hasMore}
+            isConnected={isConnected}
+            isUploading={isUploading}
+            tokenUsage={{ used: 4000, total: 100000 }}
+            attachedFile={attachedFile}
+            sessionTitle={projectName}
+            tasks={tasks}
+            thinkingStatus={thinkingStatus}
+            onToggleLeft={() => setLayout(layout === 'left' ? 'none' : 'left')}
+            onToggleRight={() => setLayout(layout === 'right' ? 'none' : 'right')}
+          />
+        ) : (
+          <div className="no-session">
+            <div className="no-session-content">
+              <span className="no-session-icon">💬</span>
+              <p>选择一个项目开始对话</p>
+              <button className="btn btn-primary" onClick={createSession}>
+                创建新项目
+              </button>
+            </div>
+          </div>
+        )}
       </main>
+
+      {/* 右侧栏 - 工作产物 (中右布局时显示) */}
+      {layout === 'right' && products.length > 0 && (
+        <aside className="aside-right">
+          <div className="sidebar-header">
+            <span>工作产物 ({products.length})</span>
+            <button className="sidebar-toggle" onClick={handleRefreshProducts} title="刷新">🔄</button>
+          </div>
+          <div className="product-list">
+            {products.map((product) => (
+              <div key={product.id} className="product-item">
+                <span className="product-item-icon">
+                  {product.type === 'IMAGE' ? '🖼️' :
+                   product.type === 'VIDEO' ? '🎬' :
+                   product.type === 'TEXT' ? '📄' : '📦'}
+                </span>
+                <div className="product-item-info">
+                  <span className="product-item-name">{product.name}</span>
+                  <span className="product-item-meta">
+                    {product.creatorAgentId} · {new Date(product.createdAt).toLocaleDateString()}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </aside>
+      )}
 
       {/* 设置弹窗 */}
       <Modal
@@ -571,7 +638,7 @@ function App() {
           </div>
         </div>
       </Modal>
-    </div>
+    </>
   )
 }
 

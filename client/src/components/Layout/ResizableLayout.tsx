@@ -3,8 +3,20 @@
  * 支持拖拽调整左右侧栏宽度
  */
 
-import React, { useState, useRef, useCallback, useEffect, ReactNode } from 'react'
+import React, { useState, useRef, useCallback, useEffect, ReactNode, createContext, useContext } from 'react'
 import './ResizableLayout.css'
+
+// 创建 Context 用于传递 toggle 函数
+interface LayoutContextValue {
+  toggleLeft?: () => void
+  toggleRight?: () => void
+}
+
+const LayoutContext = createContext<LayoutContextValue>({})
+
+export function useLayoutToggle() {
+  return useContext(LayoutContext)
+}
 
 interface ResizableLayoutProps {
   leftPanel?: ReactNode
@@ -62,17 +74,13 @@ export function ResizableLayout({
     onLeftToggle?.(true)
   }, [rightCollapsed, onLeftToggle, onRightToggle])
 
-  // 将 toggle 函数添加到 centerPanel
+  // 简化：直接渲染 centerPanel，通过 Context 传递 toggle 函数
   const renderCenterPanel = () => {
-    if (!centerPanel) return null
-    const child = centerPanel as React.ReactElement
-    if (child && child.props) {
-      return React.cloneElement(child, {
-        onToggleLeft: toggleLeft,
-        onToggleRight: toggleRight
-      } as any)
-    }
-    return centerPanel
+    return (
+      <LayoutContext.Provider value={{ toggleLeft, toggleRight }}>
+        {centerPanel}
+      </LayoutContext.Provider>
+    )
   }
 
   // 开始拖拽左侧

@@ -7,11 +7,13 @@ interface MessageListProps {
   hasMore?: boolean
   onLoadMore?: () => void
   isLoading?: boolean
+  thinkingStatus?: { stage: string; content: string } | null
 }
 
-export function MessageList({ messages, hasMore, onLoadMore, isLoading }: MessageListProps) {
+export function MessageList({ messages, hasMore, onLoadMore, isLoading, thinkingStatus }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const shouldScrollRef = useRef(true)
+  const isAtTopRef = useRef(false)
 
   // 自动滚动到底部
   useEffect(() => {
@@ -22,11 +24,15 @@ export function MessageList({ messages, hasMore, onLoadMore, isLoading }: Messag
 
   // 处理滚动事件，用于加载更多
   const handleScroll = () => {
-    if (!containerRef.current || !hasMore || isLoading) return
+    if (!containerRef.current) return
 
     const { scrollTop } = containerRef.current
-    // 滚动到顶部时加载更多
-    if (scrollTop < 50 && onLoadMore) {
+
+    // 记录是否滚动到顶部
+    isAtTopRef.current = scrollTop === 0
+
+    // 只有在滚动到顶部且有更多消息时才加载
+    if (isAtTopRef.current && hasMore && onLoadMore && !isLoading) {
       shouldScrollRef.current = false
       onLoadMore()
     }
@@ -53,17 +59,21 @@ export function MessageList({ messages, hasMore, onLoadMore, isLoading }: Messag
       ref={containerRef}
       onScroll={handleScrollWrapper}
     >
-      {/* 加载更多提示 */}
-      {hasMore && (
-        <div className="load-more" onClick={onLoadMore}>
-          {isLoading ? '加载中...' : '点击加载更多'}
-        </div>
-      )}
-
       {/* 消息列表 */}
       {messages.map((msg) => (
         <MessageBubble key={msg.id} message={msg} />
       ))}
+
+      {/* Agent 工作状态卡片 - 极简单行样式 */}
+      {thinkingStatus && (
+        <div className="thinking-status-card">
+          <span className="thinking-status-icon">🤔</span>
+          <div className="thinking-status-content">
+            <span className="thinking-status-title">{thinkingStatus.stage}:</span>
+            <span className="thinking-status-text">{thinkingStatus.content}</span>
+          </div>
+        </div>
+      )}
 
       {messages.length === 0 && (
         <div className="empty-messages">

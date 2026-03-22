@@ -9,6 +9,8 @@ export interface TaskInfo {
   assigneeType?: string
   startedAt?: string
   completedAt?: string
+  progress?: number
+  progressMessage?: string
 }
 
 interface TaskProgressDrawerProps {

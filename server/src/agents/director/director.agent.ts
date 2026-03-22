@@ -16,6 +16,7 @@ import {
   type Task
 } from '../base/agent.interface'
 import { taskService } from '../../services/task.service'
+import { createMessage } from '../../services/message.service'
 
 // WebSocket 广播函数类型（由 AgentEngine 传入）
 type BroadcastFunction = (event: any) => void
@@ -119,8 +120,8 @@ ReAct 思维链模式：
     // 4. ReAct 循环执行
     const executionResult = await this.reactLoop(context, project.novelText || '', initialPlan)
 
-    // 5. 编译最终结果
-    return this.compileReActResult(executionResult)
+    // 5. 编译最终结果（写入工作产出到消息表）
+    return await this.compileReActResult(executionResult, context)
   }
 
   /**
@@ -318,6 +319,40 @@ ${novelText.slice(0, 5000)}
           step: step.name,
           artifacts: actionResult
         })
+      } else {
+        // AI 未返回有效 action，尝试基于 step.tool 执行
+        if (step.tool && step.tool !== 'request_approval') {
+          console.log(`[Director] No action from AI, executing step.tool: ${step.tool}`)
+          try {
+            // 获取项目信息
+            const project = await prisma.project.findUnique({ where: { id: context.projectId } })
+            if (!project) {
+              console.error('[Director] Project not found')
+              return state
+            }
+
+            const { AgentFactory } = await import('../factory/agent.factory')
+            const actionResult = await AgentFactory.executeTool(step.tool, context, {
+              novelText: project.novelText || '',
+              projectId: context.projectId,
+              previousArtifacts: state.artifacts
+            })
+
+            if (actionResult.success) {
+              state.artifacts[step.id] = actionResult.output
+
+              // 广播产出物
+              this.broadcastProgress(context.projectId, {
+                type: 'artifacts',
+                message: `产出物已生成: ${step.name}`,
+                step: step.name,
+                artifacts: actionResult.output
+              })
+            }
+          } catch (error) {
+            console.error(`[Director] Failed to execute step.tool: ${step.tool}`, error)
+          }
+        }
       }
 
       // 检查是否需要用户确认（支持两种方式：step.requiresApproval 和 thoughtResult.needsApproval）
@@ -604,18 +639,51 @@ ${novelText.slice(0, 3000)}
   }
 
   /**
-   * 编译 ReAct 结果
+   * 编译 ReAct 结果 - 将工作产出写入消息表
    */
-  private compileReActResult(state: ReActState): AgentResult {
+  private async compileReActResult(state: ReActState, context: AgentContext): Promise<AgentResult> {
+    const { sessionId } = context
+    const artifacts = state.artifacts
+    const stepsCompleted = state.currentStep
+
+    // 将所有工作产出写入消息表
+    if (sessionId && artifacts && Object.keys(artifacts).length > 0) {
+      for (const [stepId, output] of Object.entries(artifacts)) {
+        if (output && typeof output === 'object') {
+          const step = state.plan.steps.find(s => s.id === stepId)
+          const content = this.formatArtifactContent(step?.name || stepId, output)
+
+          await createMessage({
+            sessionId,
+            role: 'assistant',  // Agent 工作产出
+            employeeId: this.type,  // director
+            content
+          })
+        }
+      }
+    }
+
     return {
       success: true,
       output: {
-        artifacts: state.artifacts,
+        artifacts,
         plan: state.plan,
-        stepsCompleted: state.currentStep
+        stepsCompleted
       },
-      message: `完成 ${state.currentStep} 个步骤的执行`
+      message: `完成 ${stepsCompleted} 个步骤的执行`
     }
+  }
+
+  /**
+   * 格式化工作产出为可读内容
+   */
+  private formatArtifactContent(stepName: string, output: any): string {
+    const outputStr = JSON.stringify(output, null, 2)
+    // 如果内容太长，截断显示
+    if (outputStr.length > 5000) {
+      return `【${stepName}】\n${outputStr.slice(0, 5000)}\n\n... (内容过长，已截断)`
+    }
+    return `【${stepName}】\n${outputStr}`
   }
 
   // 缓存的 pipeline
@@ -779,13 +847,34 @@ ${novelText.slice(0, 3000)}
       assigneeType: this.getAssigneeTypeForTask(task.type)
     })
 
+    // 写入消息到数据库
+    const assigneeLabel = this.getAssigneeLabel(dbTask.assigneeType || undefined)
+    if (sessionId) {
+      await createMessage({
+        sessionId,
+        role: 'system',
+        employeeId: 'system',
+        content: `📋 创建任务：${task.name} (分配给 ${assigneeLabel})`
+      })
+    }
+
     // 广播任务创建
     this.broadcastTaskCreated(context, dbTask)
 
     try {
       // 2. 开始执行任务
       dbTask = await taskService.startTask(dbTask.id)
-      this.broadcastTaskStarted(context, dbTask.id, this.getAssigneeLabel(dbTask.assigneeType || undefined))
+      this.broadcastTaskStarted(context, dbTask.id, assigneeLabel)
+
+      // 写入任务开始消息
+      if (sessionId) {
+        await createMessage({
+          sessionId,
+          role: 'system',
+          employeeId: 'system',
+          content: `🚀 ${assigneeLabel} 开始执行：${task.name}`
+        })
+      }
 
       // 发送思考状态
       context.sendEvent?.({
@@ -811,7 +900,17 @@ ${novelText.slice(0, 3000)}
       dbTask = await taskService.completeTask(dbTask.id, result, execContext)
       this.broadcastTaskCompleted(context, dbTask.id, result)
 
-      // 5. 检查是否需要用户确认
+      // 写入任务完成消息到 Context
+      if (sessionId) {
+        await createMessage({
+          sessionId,
+          role: 'system',
+          employeeId: 'system',
+          content: `✅ ${task.name} 已完成`
+        })
+      }
+
+      // 5. 检查是否需要用户确认 - 需要用户介入时不发送 done
       if (task.requireApproval) {
         dbTask = await taskService.requestApproval(dbTask.id, `${task.name} 已完成，请确认`)
         this.broadcastTaskWaitingApproval(context, dbTask.id, `${task.name} 已完成，请确认`)
@@ -824,6 +923,13 @@ ${novelText.slice(0, 3000)}
         }
       }
 
+      // 只有不需要用户介入时才发送 done 消息
+      context.sendEvent?.({
+        type: 'done',
+        taskId: dbTask.id,
+        taskName: task.name
+      })
+
       return {
         success: true,
         output: result,
@@ -833,6 +939,16 @@ ${novelText.slice(0, 3000)}
     } catch (error: any) {
       console.error(`[Director] Task execution failed: ${task.type}`, error)
 
+      // 写入任务失败消息
+      if (sessionId) {
+        await createMessage({
+          sessionId,
+          role: 'system',
+          employeeId: 'system',
+          content: `❌ 任务失败：${task.name} - ${error.message}`
+        })
+      }
+
       // 使用 TaskService 处理失败
       const canRetry = await taskService.handleFailure(dbTask.id, error.message)
       this.broadcastTaskFailed(context, dbTask.id, error.message, canRetry)
@@ -840,6 +956,16 @@ ${novelText.slice(0, 3000)}
       // 如果超过重试次数，返回用户
       if (!canRetry) {
         this.broadcastTaskWaitingUser(context, dbTask.id, '超过最大修改次数，请提供专业意见')
+
+        // 写入需要用户确认消息
+        if (sessionId) {
+          await createMessage({
+            sessionId,
+            role: 'system',
+            employeeId: 'system',
+            content: `⚠️ ${task.name} 超过最大修改次数，请提供专业意见`
+          })
+        }
       }
 
       return {
