@@ -1,12 +1,30 @@
 :root {
+  /* 基础配色 */
   --text: #6b6375;
   --text-h: #08060d;
+  --text-primary: #333;
+  --text-secondary: #6b7280;
+  --text-muted: #9ca3af;
+
   --bg: #fff;
+  --bg-primary: #fff;
+  --bg-secondary: #f9fafb;
+  --bg-hover: #f3f4f6;
+  --bg-disabled: #f3f4f6;
+
+  --border-color: #e5e4e7;
   --border: #e5e4e7;
+
   --code-bg: #f4f3ec;
+
+  /* 主题色 - 紫色系 */
   --accent: #aa3bff;
+  --accent-color: #aa3bff;
+  --accent-hover: #9333ea;
+  --accent-muted: #9ca3af;
   --accent-bg: rgba(170, 59, 255, 0.1);
   --accent-border: rgba(170, 59, 255, 0.5);
+
   --social-bg: rgba(244, 243, 236, 0.5);
   --shadow:
     rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
@@ -34,12 +52,29 @@
   :root {
     --text: #9ca3af;
     --text-h: #f3f4f6;
+    --text-primary: #f3f4f6;
+    --text-secondary: #9ca3af;
+    --text-muted: #6b7280;
+
     --bg: #16171d;
+    --bg-primary: #1a1b21;
+    --bg-secondary: #25262b;
+    --bg-hover: #2c2d33;
+    --bg-disabled: #2c2d33;
+
+    --border-color: #2e303a;
     --border: #2e303a;
+
     --code-bg: #1f2028;
+
+    /* 主题色 - 暗色模式 */
     --accent: #c084fc;
+    --accent-color: #c084fc;
+    --accent-hover: #a855f7;
+    --accent-muted: #6b7280;
     --accent-bg: rgba(192, 132, 252, 0.15);
     --accent-border: rgba(192, 132, 252, 0.5);
+
     --social-bg: rgba(47, 48, 58, 0.5);
     --shadow:
       rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
@@ -51,12 +86,10 @@
 }
 
 #root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
-  min-height: 100svh;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;

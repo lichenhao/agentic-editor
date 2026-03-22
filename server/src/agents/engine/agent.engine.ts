@@ -4,6 +4,7 @@
  */
 
 import { prisma } from '../../infrastructure/database/prisma'
+import { createMessage } from '../../services/message.service'
 
 // 重新导出新架构的核心组件
 export { AgentProfileLoader } from '../loader/agent-profile.loader'
@@ -22,6 +23,7 @@ export interface AgentConfig {
 export interface ProcessParams {
   sessionId: string
   userId: string
+  agentId?: string
   message: string
   attachments?: any[]
   sendEvent: (event: any) => void
@@ -29,20 +31,30 @@ export interface ProcessParams {
 
 export const agentEngine = {
   process: async (params: ProcessParams): Promise<void> => {
-    const { sessionId, message, sendEvent } = params
+    const { sessionId, agentId, message, sendEvent } = params
 
-    console.log(`[AgentEngine] Processing session: ${sessionId}, message: ${message.substring(0, 50)}...`)
+    console.log(`[AgentEngine] Processing session: ${sessionId}, agent: ${agentId || 'default'}, message: ${message.substring(0, 50)}...`)
 
     // 发送思考状态
     sendEvent({ type: 'thinking', stage: 'understanding', content: '理解用户意图...' })
 
-    // 简单响应（暂时使用 stub，后续迁移到完整引擎）
-    sendEvent({
-      type: 'message',
-      id: `msg_${Date.now()}`,
+    // 创建助手消息并保存到数据库
+    const assistantMessage = await createMessage({
+      sessionId,
       role: 'assistant',
       content: '我已收到您的消息。Agent Engine 正在重构中，完整功能稍后可用。',
-      createdAt: new Date().toISOString()
+      employeeId: agentId || 'director'
+    })
+
+    // 发送助手消息（带 employeeId）
+    sendEvent({
+      type: 'message',
+      id: assistantMessage.id,
+      role: 'assistant',
+      content: assistantMessage.content,
+      employeeId: agentId || 'director',
+      createdAt: assistantMessage.createdAt.toISOString(),
+      order: assistantMessage.order.toString()
     })
 
     sendEvent({ type: 'done', summary: '消息已接收' })

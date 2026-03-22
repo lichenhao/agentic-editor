@@ -15,12 +15,15 @@ const clients: Map<string, Client> = new Map()
 
 // 消息类型定义
 export type ClientMessage =
+  | { type: 'join_session'; sessionId: string }
   | { type: 'message'; content: string; sessionId?: string; attachments?: any[] }
   | { type: 'confirmation'; sessionId: string; confirmed: boolean; feedback?: string }
   | { type: 'selection'; stage: string; selectedIds: string[] }  // 用户选择响应
   | { type: 'confirm_draft'; draftId: string; confirmed: boolean; modifications?: any }  // 草稿确认
   | { type: 'request_revision'; draftId: string; feedback: string }  // 请求修改
   | { type: 'create_session'; agentId?: string }
+  | { type: 'load_history'; sessionId: string; before?: string; limit?: number }
+  | { type: 'load_products'; sessionId: string }
   | { type: 'ping' }
 
 export type ServerMessage =
@@ -30,7 +33,7 @@ export type ServerMessage =
   | { type: 'step_update'; stepId: string; status: string; output?: string }
   | { type: 'tool_call'; tool: string; params: any; status: 'calling' | 'completed' | 'error'; result?: any }
   | { type: 'tool_result'; tool: string; result: any; status: 'completed' | 'error' }
-  | { type: 'message'; id: string; role: 'user' | 'assistant'; content: string; createdAt: string; delta?: string }
+  | { type: 'message'; id: string; role: 'user' | 'assistant'; content: string; createdAt: string; delta?: string; employeeId?: string; order?: string }
   | { type: 'user_confirmation'; message: string; options: { id: string; label: string; description?: string }[] }
   | { type: 'selection_request'; stage: string; message: string; options: { id: string; label: string; description?: string }[] }
   | { type: 'draft_ready'; stage: string; draftId: string; summary: string; data: any; options: { id: string; label: string }[] }
@@ -38,7 +41,11 @@ export type ServerMessage =
   | { type: 'done'; summary?: string; suggestions?: { type: 'action' | 'suggestion'; label: string; content: string }[] }
   | { type: 'error'; message: string }
   | { type: 'session_created'; sessionId: string; agentId: string }
+  | { type: 'session_joined'; sessionId: string; projectAgents: any[]; messages: any[] }
   | { type: 'chunking_complete'; totalChunks: number; chapters: { id: string; title: string; chunkCount: number }[] }
+  | { type: 'history_loaded'; messages: any[]; hasMore: boolean }
+  | { type: 'products_loaded'; products: any[] }
+  | { type: 'product_created'; product: any }
   | { type: 'pong' }
 
 // 辅助函数：发送消息到会话（简化调用）
@@ -209,6 +216,111 @@ async function handleMessage(clientId: string, message: ClientMessage) {
       break
     }
 
+    case 'join_session': {
+      // 加入会话（群聊支持）
+      const { sessionId } = message
+      client.sessionId = sessionId
+
+      // 获取会话信息
+      const session = await prisma.session.findUnique({
+        where: { id: sessionId },
+        include: {
+          contexts: {
+            orderBy: { createdAt: 'desc' },
+            take: 100
+          }
+        }
+      })
+
+      if (session) {
+        // 获取项目的 Agent 列表
+        const metadata = session.metadata as any
+        const projectId = metadata?.projectId
+        let projectAgents: any[] = []
+
+        if (projectId) {
+          const { ProjectAgentService } = await import('../agents/service/project-agent.service')
+          projectAgents = await ProjectAgentService.getProjectAgents(projectId)
+        }
+
+        // 发送会话加入成功和历史消息
+        sendToClient(ws, {
+          type: 'session_joined',
+          sessionId,
+          projectAgents,
+          messages: session.contexts.map(c => ({
+            id: c.id,
+            role: c.role,
+            content: c.content,
+            employeeId: c.employeeId,
+            createdAt: c.createdAt.toISOString(),
+            order: c.order.toString()
+          }))
+        })
+      }
+      break
+    }
+
+    case 'load_history': {
+      // 加载历史消息（分页）
+      const { sessionId, before, limit = 50 } = message
+      const messages = await prisma.context.findMany({
+        where: {
+          sessionId,
+          ...(before ? {
+            createdAt: {
+              lt: (await prisma.context.findUnique({ where: { id: before } }))?.createdAt
+            }
+          } : {})
+        },
+        orderBy: [
+          { createdAt: 'desc' },
+          { order: 'desc' }
+        ],
+        take: Math.min(limit, 100)
+      })
+
+      sendToClient(ws, {
+        type: 'history_loaded',
+        messages: messages.reverse().map(m => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          employeeId: m.employeeId,
+          createdAt: m.createdAt.toISOString(),
+          order: m.order.toString()
+        })),
+        hasMore: messages.length === limit
+      })
+      break
+    }
+
+    case 'load_products': {
+      // 加载工作产物
+      const { sessionId } = message
+
+      const session = await prisma.session.findUnique({
+        where: { id: sessionId },
+        select: { metadata: true }
+      })
+
+      const metadata = session?.metadata as any
+      const projectId = metadata?.projectId
+
+      if (projectId) {
+        const products = await prisma.workProduct.findMany({
+          where: { projectId },
+          orderBy: { createdAt: 'desc' }
+        })
+
+        sendToClient(ws, {
+          type: 'products_loaded',
+          products
+        })
+      }
+      break
+    }
+
     case 'ping':
       sendToClient(ws, { type: 'pong' })
       break
@@ -236,12 +348,18 @@ async function processMessage(
     console.log('[WebSocket] Processing message with attachments:', attachments)
   }
 
-  // 保存用户消息到数据库（包含附件信息）
+  // 获取会话信息以获取 agentId
+  const session = await prisma.session.findUnique({
+    where: { id: sessionId }
+  })
+
+  // 保存用户消息到数据库（包含附件信息和 employeeId）
   const userMessage = await createMessage({
     sessionId,
     role: 'user',
     content: fullContent,
-    attachments: attachments || []
+    attachments: attachments || [],
+    employeeId: 'user'  // 用户消息标记为 'user'
   })
 
   // 发送用户消息给客户端（带 id 和 timestamp）
@@ -250,7 +368,9 @@ async function processMessage(
     id: userMessage.id,
     role: 'user',
     content: fullContent,
-    createdAt: userMessage.createdAt.toISOString()
+    employeeId: 'user',
+    createdAt: userMessage.createdAt.toISOString(),
+    order: userMessage.order.toString()
   })
 
   // 更新会话状态
@@ -259,14 +379,22 @@ async function processMessage(
     data: { status: 'ACTIVE', updatedAt: new Date() }
   })
 
+  // 使用 session 的 agentId 作为 employeeId
+  const agentEmployeeId = session?.agentId || 'director'
+
   // 启动 Agent 引擎处理消息
   await agentEngine.process({
     sessionId,
     userId: client.userId,
+    agentId: agentEmployeeId,
     message: content, // 原始消息内容
     attachments, // 附件信息
     sendEvent: (event: ServerMessage) => {
       console.log('[Server] Sending event:', event.type, event)
+      // 为 assistant 消息添加 employeeId
+      if (event.type === 'message' && event.role === 'assistant') {
+        event.employeeId = agentEmployeeId
+      }
       sendToClient(ws, event)
     }
   })

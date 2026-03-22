@@ -549,6 +549,19 @@ enum SessionStatus {
   COMPLETED
 }
 
+// 工作产物类型
+enum ProductType {
+  IMAGE
+  VIDEO
+  AUDIO
+  TEXT
+  JSON
+  CODE
+  STORYBOARD
+  SCRIPT
+  ASSET
+}
+
 // 会话模型
 model Session {
   id        String        @id @default(uuid())
@@ -557,8 +570,14 @@ model Session {
   agentId   String        // 使用的 Agent 类型
   status    SessionStatus @default(ACTIVE)
   metadata  Json?         // 会话元数据
-  createdAt DateTime      @default(now())
-  updatedAt DateTime      @updatedAt
+
+  // 群聊支持
+  isGroupChat Boolean     @default(false)
+  groupAgents Json?       // 参与的Agent类型列表
+  projectId   String?     // 关联项目
+
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
 
   contexts  Context[]
   summaries ContextSummary[]
@@ -566,6 +585,7 @@ model Session {
   @@index([userId])
   @@index([agentId])
   @@index([status])
+  @@index([projectId])
 }
 
 // 上下文/消息模型
@@ -582,10 +602,14 @@ model Context {
   createdAt   DateTime  @default(now())  // 服务器时间戳
   order       BigInt    @default(0)       // 排序序号（时间戳+序号，确保时序）
 
+  // 群聊支持
+  projectId      String?  // 关联项目
+
   @@index([sessionId])
   @@index([createdAt])
   @@index([order])
   @@index([employeeId])
+  @@index([projectId])
 }
 
 // 上下文压缩摘要
@@ -598,6 +622,37 @@ model ContextSummary {
   createdAt   DateTime  @default(now())
 
   @@index([sessionId])
+}
+
+// 工作产物模型 - 独立存储项目产出
+model WorkProduct {
+  id              String        @id @default(uuid())
+  projectId       String        // 归属项目
+  sessionId       String        // 归属会话
+
+  // 产物元数据
+  type            ProductType   // IMAGE, VIDEO, TEXT, JSON, CODE, STORYBOARD, etc.
+  name            String
+  description     String?
+  mimeType        String?
+
+  // 内容存储（混合策略）
+  content         String?       @db.Text  // 小内容直接存
+  storageKey      String?       // 大内容存本地，用 key 引用
+
+  // 关联信息
+  sourceMessageId String?       // 触发该产物的消息ID
+  creatorAgentId  String?       // 创建者Agent类型
+
+  // 扩展信息
+  metadata        Json?
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([projectId])
+  @@index([sessionId])
+  @@index([type])
 }
 
 // 角色模型 - 存储角色设定，确保跨章节一致性
