@@ -13,7 +13,10 @@ const fastify = Fastify({
 })
 
 // Register plugins
-await fastify.register(cors, { origin: true })
+await fastify.register(cors, {
+  origin: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS']
+})
 await fastify.register(multipart, { limits: { fileSize: 500 * 1024 * 1024 } })
 
 // Setup WebSocket

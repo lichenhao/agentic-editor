@@ -8,6 +8,7 @@ interface MessageInputProps {
   isUploading?: boolean
   placeholder?: string
   tokenUsage?: { used: number; total: number }
+  attachedFile?: { name: string; status: 'uploading' | 'ready' | 'error' } | null
 }
 
 export function MessageInput({
@@ -17,7 +18,8 @@ export function MessageInput({
   disabled,
   isUploading,
   placeholder = '输入消息...',
-  tokenUsage
+  tokenUsage,
+  attachedFile
 }: MessageInputProps) {
   const [content, setContent] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -119,6 +121,26 @@ export function MessageInput({
               <span className="token-usage">上下文</span>
             )}
           </div>
+
+          {/* 文件附件指示器 */}
+          {attachedFile && (
+            <>
+              <span className="attachment-divider">|</span>
+              <div
+                className={`attachment-indicator ${attachedFile.status}`}
+                title={attachedFile.status === 'uploading' ? '上传中...' : attachedFile.status === 'ready' ? `已上传: ${attachedFile.name}` : '上传失败'}
+              >
+                {attachedFile.status === 'uploading' ? (
+                  <span className="upload-spinner-small">⏳</span>
+                ) : attachedFile.status === 'ready' ? (
+                  <span className="file-icon">📎</span>
+                ) : (
+                  <span className="file-icon error">⚠️</span>
+                )}
+                <span className="file-name">{attachedFile.name}</span>
+              </div>
+            </>
+          )}
         </div>
 
         {/* 发送按钮 - 右对齐 */}

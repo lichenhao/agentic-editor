@@ -2,7 +2,9 @@ import { useState, useEffect, useCallback } from 'react'
 import { sessionApi, productApi, messageApi, uploadApi } from './services/api'
 import { ChatPanel } from './components/Chat/ChatPanel'
 import { Modal } from './components/Layout/Modal'
+import { ResizableLayout } from './components/Layout/ResizableLayout'
 import { Message, WorkProduct, Session } from './types'
+import { TaskInfo } from './components/Task/TaskProgressDrawer'
 import './styles/design-tokens.css'
 import './styles/global.css'
 import './App.css'
@@ -19,19 +21,27 @@ function App() {
   // 产物状态 (使用 HTTP 加载)
   const [products, setProducts] = useState<WorkProduct[]>([])
 
-  // 侧边栏状态
-  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false)
-  const [rightSidebarCollapsed, setRightSidebarCollapsed] = useState(true)
+  // 侧边栏状态 - 已移至 ResizableLayout 组件管理
+  // const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false)
+  // const [rightSidebarCollapsed, setRightSidebarCollapsed] = useState(true)
 
   // 弹窗状态
   const [showSettingsModal, setShowSettingsModal] = useState(false)
+  const [showCreateModal, setShowCreateModal] = useState(false)
+  const [newProjectName, setNewProjectName] = useState('')
+  const [newProjectDesc, setNewProjectDesc] = useState('')
+  const [isCreating, setIsCreating] = useState(false)
 
   // 文件上传状态
   const [isUploading, setIsUploading] = useState(false)
+  const [attachedFile, setAttachedFile] = useState<{ name: string; status: 'uploading' | 'ready' | 'error' } | null>(null)
 
   // WebSocket 状态 (仅用于聊天)
   const [ws, setWs] = useState<WebSocket | null>(null)
   const [isConnected, setIsConnected] = useState(false)
+
+  // 任务状态
+  const [tasks, setTasks] = useState<TaskInfo[]>([])
 
   // ============ 加载会话列表 (HTTP) ============
   const loadSessions = useCallback(async () => {
@@ -139,7 +149,12 @@ function App() {
         }
         break
 
+      case 'thinking':
+        // Agent 正在工作中，通过任务进度显示
+        break
+
       case 'message':
+        // 收到 Agent 消息
         setMessages(prev => {
           const newMsg: Message = {
             id: data.id,
@@ -154,6 +169,63 @@ function App() {
           if (index === -1) return [...prev, newMsg]
           return [...prev.slice(0, index), newMsg, ...prev.slice(index)]
         })
+        break
+
+      case 'done':
+        // 完成
+        break
+
+      case 'error':
+        // 错误
+        break
+
+      // 任务相关消息
+      case 'task_created':
+        setTasks(prev => [...prev, {
+          id: data.task.id,
+          name: data.task.name,
+          type: data.task.type,
+          status: data.task.status,
+          assigneeType: data.task.assigneeType
+        }])
+        break
+
+      case 'task_started':
+        setTasks(prev => prev.map(t =>
+          t.id === data.taskId ? { ...t, status: 'IN_PROGRESS', startedAt: new Date().toISOString() } : t
+        ))
+        break
+
+      case 'task_completed':
+        setTasks(prev => prev.map(t =>
+          t.id === data.taskId ? { ...t, status: 'COMPLETED', completedAt: new Date().toISOString() } : t
+        ))
+        break
+
+      case 'task_failed':
+        setTasks(prev => prev.map(t =>
+          t.id === data.taskId ? { ...t, status: 'FAILED' } : t
+        ))
+        break
+
+      case 'task_waiting_approval':
+        setTasks(prev => prev.map(t =>
+          t.id === data.taskId ? { ...t, status: 'WAITING_APPROVAL' } : t
+        ))
+        break
+
+      case 'tasks_loaded':
+        if (data.tasks && Array.isArray(data.tasks)) {
+          setTasks(data.tasks.map((t: any) => ({
+            id: t.id,
+            name: t.name,
+            type: t.type,
+            status: t.status,
+            assigneeType: t.assigneeType,
+            startedAt: t.startedAt,
+            completedAt: t.completedAt
+          })))
+        }
         break
 
       case 'history_loaded':
@@ -190,11 +262,43 @@ function App() {
     }
   }
 
-  // ============ 删除会话 ============
-  const deleteSession = async (sessionId: string, e: React.MouseEvent) => {
+  // ============ 创建新项目 (带弹窗输入) ============
+  const handleCreateProject = async () => {
+    if (!newProjectName.trim()) {
+      alert('请输入项目名称')
+      return
+    }
+
+    setIsCreating(true)
+    try {
+      const data = await sessionApi.create(undefined, newProjectName.trim())
+      if (data.session) {
+        // 重置弹窗状态
+        setShowCreateModal(false)
+        setNewProjectName('')
+        setNewProjectDesc('')
+        // 加载会话列表并选择新会话
+        await loadSessions()
+        selectSession(data.session)
+      }
+    } catch (err) {
+      console.error('Failed to create project:', err)
+      alert('创建失败，请重试')
+    } finally {
+      setIsCreating(false)
+    }
+  }
+
+  // 删除按钮点击处理 - 使用事件代理
+  const handleDeleteClick = (sessionId: string) => (e: React.MouseEvent) => {
     e.stopPropagation()
     if (!confirm('确定要删除这个项目吗？')) return
 
+    deleteSessionById(sessionId)
+  }
+
+  // ============ 删除会话 (独立函数) ============
+  const deleteSessionById = async (sessionId: string) => {
     try {
       await sessionApi.delete(sessionId)
       if (currentSession?.id === sessionId) {
@@ -255,17 +359,27 @@ function App() {
       const file = target.files?.[0]
       if (!file) return
 
+      // 设置文件状态为上传中
+      setAttachedFile({ name: file.name, status: 'uploading' })
       setIsUploading(true)
+
       try {
         const result = await uploadApi.upload(file)
         if (result.error) {
+          setAttachedFile({ name: file.name, status: 'error' })
           alert('上传失败: ' + result.error)
+          // 3秒后清除错误状态
+          setTimeout(() => setAttachedFile(null), 3000)
           return
         }
         console.log('文件上传成功:', result.fileName, '分片数:', result.chunkCount)
+        setAttachedFile({ name: file.name, status: 'ready' })
       } catch (err) {
         console.error('Upload error:', err)
+        setAttachedFile({ name: file.name, status: 'error' })
         alert('上传失败，请重试')
+        // 3秒后清除错误状态
+        setTimeout(() => setAttachedFile(null), 3000)
       } finally {
         setIsUploading(false)
       }
@@ -288,56 +402,17 @@ function App() {
 
   return (
     <div className="app">
-      {/* 顶部导航栏 */}
-      <header className="app-header">
-        <div className="header-left">
-          <button className="header-btn" onClick={() => setLeftSidebarCollapsed(!leftSidebarCollapsed)}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M3 12h18M3 6h18M3 18h18" />
-            </svg>
-            <span>{projectName}</span>
-          </button>
-        </div>
-
-        <div className="header-center">
-          <h1 className="app-title">AI 短剧助手</h1>
-        </div>
-
-        <div className="header-right">
-          <button
-            className="header-btn"
-            onClick={() => {
-              // 有产物时才能展开右侧栏
-              if (products.length > 0) {
-                setRightSidebarCollapsed(!rightSidebarCollapsed)
-              }
-            }}
-            title={products.length > 0 ? "工作产物" : "暂无产物"}
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
-            </svg>
-            {products.length > 0 && <span className="badge">{products.length}</span>}
-          </button>
-          <button className="header-btn" onClick={() => setShowSettingsModal(true)} title="设置">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z" />
-            </svg>
-          </button>
-        </div>
-      </header>
-
       {/* 核心聊天区域 - 三栏布局 */}
       <main className="app-main">
-        {/* 左侧栏 - 对话历史 */}
-        <aside className={`sidebar-left ${leftSidebarCollapsed ? 'collapsed' : ''}`}>
-          {!leftSidebarCollapsed && (
+        <ResizableLayout
+          leftWidth={200}
+          rightWidth={360}
+          minCenterWidth={400}
+          minSideWidth={300}
+          onLeftToggle={() => {}}
+          onRightToggle={() => {}}
+          leftPanel={
             <>
-              <div className="sidebar-header">
-                <span>项目列表</span>
-                <button className="sidebar-toggle" onClick={createSession} title="新建项目">+</button>
-              </div>
               <div className="project-list">
                 {sessions.map((session) => {
                   const m = session.metadata as any
@@ -356,7 +431,7 @@ function App() {
                       </div>
                       <button
                         className="project-delete-btn"
-                        onClick={(e) => deleteSession(session.id, e)}
+                        onClick={handleDeleteClick(session.id)}
                         title="删除项目"
                       >
                         ×
@@ -364,66 +439,70 @@ function App() {
                     </div>
                   )
                 })}
-              </div>
-            </>
-          )}
-        </aside>
-
-        {/* 中间栏 - 聊天区域 */}
-        <div className="chat-container">
-          {currentSession ? (
-            <ChatPanel
-              messages={messages}
-              onSendMessage={handleSendMessage}
-              onLoadMore={handleLoadMore}
-              onAttach={handleAttach}
-              onCommand={() => {}}
-              hasMore={hasMore}
-              isConnected={isConnected}
-              isUploading={isUploading}
-              tokenUsage={{ used: 4000, total: 100000 }}
-            />
-          ) : (
-            <div className="no-session">
-              <div className="no-session-content">
-                <span className="no-session-icon">💬</span>
-                <p>选择一个项目开始对话</p>
-                <button className="btn btn-primary" onClick={createSession}>
-                  创建新项目
+                <button className="new-project-btn" onClick={() => setShowCreateModal(true)}>
+                  + 新建项目
                 </button>
               </div>
-            </div>
-          )}
-        </div>
-
-        {/* 右侧栏 - 产物面板 */}
-        <aside className={`sidebar-right ${rightSidebarCollapsed ? 'collapsed' : ''}`}>
-          {!rightSidebarCollapsed && products.length > 0 && (
-            <>
-              <div className="sidebar-header">
-                <span>工作产物 ({products.length})</span>
-                <button className="sidebar-toggle" onClick={handleRefreshProducts} title="刷新">🔄</button>
-              </div>
-              <div className="product-list">
-                {products.map((product) => (
-                  <div key={product.id} className="product-item">
-                    <span className="product-item-icon">
-                      {product.type === 'IMAGE' ? '🖼️' :
-                       product.type === 'VIDEO' ? '🎬' :
-                       product.type === 'TEXT' ? '📄' : '📦'}
-                    </span>
-                    <div className="product-item-info">
-                      <span className="product-item-name">{product.name}</span>
-                      <span className="product-item-meta">
-                        {product.creatorAgentId} · {new Date(product.createdAt).toLocaleDateString()}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
             </>
-          )}
-        </aside>
+          }
+          centerPanel={
+            currentSession ? (
+              <ChatPanel
+                messages={messages}
+                onSendMessage={handleSendMessage}
+                onLoadMore={handleLoadMore}
+                onAttach={handleAttach}
+                onCommand={() => {}}
+                onToggleLeft={() => {}}
+                onToggleRight={() => {}}
+                hasMore={hasMore}
+                isConnected={isConnected}
+                isUploading={isUploading}
+                tokenUsage={{ used: 4000, total: 100000 }}
+                attachedFile={attachedFile}
+                sessionTitle={projectName}
+                tasks={tasks}
+              />
+            ) : (
+              <div className="no-session">
+                <div className="no-session-content">
+                  <span className="no-session-icon">💬</span>
+                  <p>选择一个项目开始对话</p>
+                  <button className="btn btn-primary" onClick={createSession}>
+                    创建新项目
+                  </button>
+                </div>
+              </div>
+            )
+          }
+          rightPanel={
+            products.length > 0 && (
+              <>
+                <div className="sidebar-header">
+                  <span>工作产物 ({products.length})</span>
+                  <button className="sidebar-toggle" onClick={handleRefreshProducts} title="刷新">🔄</button>
+                </div>
+                <div className="product-list">
+                  {products.map((product) => (
+                    <div key={product.id} className="product-item">
+                      <span className="product-item-icon">
+                        {product.type === 'IMAGE' ? '🖼️' :
+                         product.type === 'VIDEO' ? '🎬' :
+                         product.type === 'TEXT' ? '📄' : '📦'}
+                      </span>
+                      <div className="product-item-info">
+                        <span className="product-item-name">{product.name}</span>
+                        <span className="product-item-meta">
+                          {product.creatorAgentId} · {new Date(product.createdAt).toLocaleDateString()}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )
+          }
+        />
       </main>
 
       {/* 设置弹窗 */}
@@ -435,6 +514,61 @@ function App() {
       >
         <div className="settings-content">
           <p>设置功能开发中...</p>
+        </div>
+      </Modal>
+
+      {/* 新建项目弹窗 */}
+      <Modal
+        isOpen={showCreateModal}
+        onClose={() => {
+          setShowCreateModal(false)
+          setNewProjectName('')
+          setNewProjectDesc('')
+        }}
+        title="新建项目"
+        size="md"
+      >
+        <div className="create-project-form">
+          <div className="form-group">
+            <label>项目名称 *</label>
+            <input
+              type="text"
+              className="form-input"
+              placeholder="请输入项目名称"
+              value={newProjectName}
+              onChange={(e) => setNewProjectName(e.target.value)}
+              autoFocus
+            />
+          </div>
+          <div className="form-group">
+            <label>项目说明</label>
+            <textarea
+              className="form-textarea"
+              placeholder="请输入项目说明（可选）"
+              value={newProjectDesc}
+              onChange={(e) => setNewProjectDesc(e.target.value)}
+              rows={3}
+            />
+          </div>
+          <div className="form-actions">
+            <button
+              className="btn btn-secondary"
+              onClick={() => {
+                setShowCreateModal(false)
+                setNewProjectName('')
+                setNewProjectDesc('')
+              }}
+            >
+              取消
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={handleCreateProject}
+              disabled={isCreating || !newProjectName.trim()}
+            >
+              {isCreating ? '创建中...' : '创建项目'}
+            </button>
+          </div>
         </div>
       </Modal>
     </div>

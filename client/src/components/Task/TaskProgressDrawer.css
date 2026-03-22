@@ -1,0 +1,127 @@
+/* 任务进度抽屉样式 */
+
+.task-progress-drawer {
+  background: var(--color-bg-secondary);
+  border-radius: var(--radius-md);
+  margin: var(--spacing-sm) var(--spacing-md);
+  overflow: hidden;
+  transition: all var(--transition-fast);
+}
+
+.task-progress-drawer.collapsed .task-drawer-header {
+  cursor: pointer;
+}
+
+.task-progress-drawer.collapsed .task-drawer-content {
+  display: none;
+}
+
+.task-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-sm) var(--spacing-md);
+  cursor: pointer;
+  user-select: none;
+}
+
+.task-drawer-header:hover {
+  background: var(--color-bg-hover);
+}
+
+.task-drawer-title {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.task-drawer-icon {
+  font-size: 10px;
+  color: var(--color-text-tertiary);
+}
+
+.task-count {
+  color: var(--color-text-tertiary);
+  font-weight: normal;
+}
+
+.task-drawer-content {
+  padding: var(--spacing-sm) var(--spacing-md);
+  padding-top: 0;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.task-empty {
+  text-align: center;
+  padding: var(--spacing-md);
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-sm);
+}
+
+.task-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.task-item {
+  background: var(--color-bg-primary);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+}
+
+.task-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.task-name {
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.task-status {
+  font-size: var(--font-size-xs);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  color: white;
+  font-weight: 500;
+}
+
+.task-item-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+}
+
+.task-assignee,
+.task-duration {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 动画效果 */
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 200px;
+  }
+}
+
+.task-drawer-content {
+  animation: slideDown 0.2s ease;
+}

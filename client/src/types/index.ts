@@ -92,6 +92,12 @@ export const AGENT_CONFIG: Record<string, AgentConfig> = {
     color: '#9333ea',
     description: '负责需求分析和任务分发'
   },
+  'thinking': {
+    name: '工作中',
+    avatar: '⚙️',
+    color: '#6b7280',
+    description: 'Agent 工作中'
+  },
   'asset': {
     name: '美术Agent',
     avatar: '🎨',

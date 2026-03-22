@@ -64,11 +64,14 @@ export async function uploadRoutes(fastify: FastifyInstance) {
       try {
         // 直接使用上传的文件内容进行分片，不需要从存储重新加载
         const content = Buffer.from(contentBase64, 'base64').toString('utf-8')
+        console.log(`[Upload] Content length: ${content.length} chars, file type: ${contentType}`)
+
         const chunkResult = await fileChunkService.chunkFileWithContent(uploadedFile.id, content)
         chunkCount = chunkResult.chunks.length
         console.log(`[Upload] File chunked into ${chunkCount} pieces`)
       } catch (chunkError: any) {
         console.error('[Upload] Chunking failed:', chunkError)
+        // 分片失败不影响文件上传成功
       }
 
       return reply.send({

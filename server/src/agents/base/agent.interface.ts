@@ -37,6 +37,7 @@ export interface Task {
 export interface AgentContext {
   projectId: string
   userId: string
+  sessionId?: string  // 用于 WebSocket 广播
   task: Task | null
   parentAgentId?: string
   level: number  // 1-3 层级
@@ -48,6 +49,7 @@ export interface AgentContext {
   assets?: any[]
   shots?: any[]
   userInput?: string  // 用户原始输入
+  sendEvent?: (event: any) => void  // WebSocket 广播函数
 }
 
 // Agent 执行记录

@@ -236,7 +236,8 @@ export abstract class BaseAgent {
    * 创建执行记录
    */
   private async createExecutionRecord(context: AgentContext): Promise<any> {
-    const instance = await prisma.agentInstance.findFirst({
+    // 尝试查找已存在的 AgentInstance
+    let instance = await prisma.agentInstance.findFirst({
       where: {
         projectId: context.projectId,
         agentType: this.type,
@@ -246,8 +247,21 @@ export abstract class BaseAgent {
       take: 1
     })
 
+    // 如果没有已存在的实例，则创建一个
     if (!instance) {
-      throw new Error('Agent instance not found')
+      console.log(`[${this.type}] Creating new agent instance for project: ${context.projectId}`)
+      instance = await prisma.agentInstance.create({
+        data: {
+          agentType: this.type,
+          projectId: context.projectId,
+          level: context.level,
+          status: 'RUNNING',
+          context: {
+            startedAt: new Date().toISOString(),
+            userInput: context.userInput
+          }
+        }
+      })
     }
 
     return await prisma.agentExecution.create({

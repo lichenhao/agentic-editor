@@ -47,6 +47,17 @@ export type ServerMessage =
   | { type: 'products_loaded'; products: any[] }
   | { type: 'product_created'; product: any }
   | { type: 'pong' }
+  // 任务相关消息
+  | { type: 'task_created'; task: any; parentTaskId?: string }
+  | { type: 'task_started'; taskId: string; assignee: string }
+  | { type: 'task_progress'; taskId: string; progress: number; message: string }
+  | { type: 'task_completed'; taskId: string; result: any }
+  | { type: 'task_failed'; taskId: string; error: string; canRetry: boolean }
+  | { type: 'task_waiting_approval'; taskId: string; description: string }
+  | { type: 'task_waiting_user'; taskId: string; reason: string }
+  | { type: 'workflow_completed'; summary: any }
+  | { type: 'workflow_blocked'; taskId: string; reason: string; suggestion: string }
+  | { type: 'tasks_loaded'; tasks: any[] }
 
 // 辅助函数：发送消息到会话（简化调用）
 export function sendMessageToSession(sessionId: string, content: string) {

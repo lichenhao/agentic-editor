@@ -15,6 +15,10 @@ import {
   type AgentType,
   type Task
 } from '../base/agent.interface'
+import { taskService } from '../../services/task.service'
+
+// WebSocket 广播函数类型（由 AgentEngine 传入）
+type BroadcastFunction = (event: any) => void
 
 // ReAct 执行状态接口
 interface ReActState {
@@ -642,6 +646,239 @@ ${novelText.slice(0, 3000)}
     }
 
     console.log('[Director] Loaded pipeline:', this.pipelineCache.map(t => t.type))
+  }
+
+  /**
+   * 广播任务进度到 WebSocket
+   */
+  protected broadcastTaskEvent(context: AgentContext, event: any) {
+    if (context.sendEvent) {
+      // 直接使用 sendEvent 发送任务消息
+      context.sendEvent(event)
+    } else {
+      // 回退到旧的广播方式
+      this.broadcastProgress(context.projectId, event)
+    }
+  }
+
+  /**
+   * 发送任务创建消息
+   */
+  protected broadcastTaskCreated(context: AgentContext, task: any, parentTaskId?: string) {
+    this.broadcastTaskEvent(context, {
+      type: 'task_created',
+      task: {
+        id: task.id,
+        type: task.type,
+        name: task.name,
+        status: task.status,
+        assigneeType: task.assigneeType
+      },
+      parentTaskId
+    })
+  }
+
+  /**
+   * 发送任务开始消息
+   */
+  protected broadcastTaskStarted(context: AgentContext, taskId: string, assignee: string) {
+    this.broadcastTaskEvent(context, {
+      type: 'task_started',
+      taskId,
+      assignee
+    })
+  }
+
+  /**
+   * 发送任务进度消息
+   */
+  protected broadcastTaskProgress(context: AgentContext, taskId: string, progress: number, message: string) {
+    this.broadcastTaskEvent(context, {
+      type: 'task_progress',
+      taskId,
+      progress,
+      message
+    })
+  }
+
+  /**
+   * 发送任务完成消息
+   */
+  protected broadcastTaskCompleted(context: AgentContext, taskId: string, result: any) {
+    this.broadcastTaskEvent(context, {
+      type: 'task_completed',
+      taskId,
+      result
+    })
+  }
+
+  /**
+   * 发送任务失败消息
+   */
+  protected broadcastTaskFailed(context: AgentContext, taskId: string, error: string, canRetry: boolean) {
+    this.broadcastTaskEvent(context, {
+      type: 'task_failed',
+      taskId,
+      error,
+      canRetry
+    })
+  }
+
+  /**
+   * 发送任务等待确认消息
+   */
+  protected broadcastTaskWaitingApproval(context: AgentContext, taskId: string, description: string) {
+    this.broadcastTaskEvent(context, {
+      type: 'task_waiting_approval',
+      taskId,
+      description
+    })
+  }
+
+  /**
+   * 发送任务等待用户输入消息
+   */
+  protected broadcastTaskWaitingUser(context: AgentContext, taskId: string, reason: string) {
+    this.broadcastTaskEvent(context, {
+      type: 'task_waiting_user',
+      taskId,
+      reason
+    })
+  }
+
+  /**
+   * 发送工作流完成消息
+   */
+  protected broadcastWorkflowCompleted(context: AgentContext, summary: any) {
+    this.broadcastTaskEvent(context, {
+      type: 'workflow_completed',
+      summary
+    })
+  }
+
+  /**
+   * 使用 TaskService 执行 Skill（集成任务管理和 WebSocket 广播）
+   */
+  private async executeSkillWithTaskService(
+    context: AgentContext,
+    task: Task
+  ): Promise<AgentResult> {
+    const { projectId, sessionId } = context
+
+    // 1. 使用 TaskService 创建任务
+    let dbTask = await taskService.createTask({
+      projectId,
+      sessionId,
+      type: task.type,
+      name: task.name,
+      payload: {
+        description: task.description,
+        skillPrompt: (task as any).skillPrompt,
+        requireApproval: task.requireApproval
+      },
+      assigneeType: this.getAssigneeTypeForTask(task.type)
+    })
+
+    // 广播任务创建
+    this.broadcastTaskCreated(context, dbTask)
+
+    try {
+      // 2. 开始执行任务
+      dbTask = await taskService.startTask(dbTask.id)
+      this.broadcastTaskStarted(context, dbTask.id, this.getAssigneeLabel(dbTask.assigneeType || undefined))
+
+      // 发送思考状态
+      context.sendEvent?.({
+        type: 'thinking',
+        stage: task.type,
+        content: `正在执行：${task.name}`
+      })
+
+      // 3. 执行任务（使用思维链）
+      const skillPrompt = (task as any).skillPrompt || ''
+      const execContext = await this.prepareContext(task, projectId)
+
+      // 报告进度
+      this.broadcastTaskProgress(context, dbTask.id, 30, '准备执行上下文...')
+
+      const result = await skillExecutor.execute(task.type, {
+        projectId,
+        context: execContext,
+        prompt: skillPrompt
+      })
+
+      // 4. 任务完成
+      dbTask = await taskService.completeTask(dbTask.id, result, execContext)
+      this.broadcastTaskCompleted(context, dbTask.id, result)
+
+      // 5. 检查是否需要用户确认
+      if (task.requireApproval) {
+        dbTask = await taskService.requestApproval(dbTask.id, `${task.name} 已完成，请确认`)
+        this.broadcastTaskWaitingApproval(context, dbTask.id, `${task.name} 已完成，请确认`)
+
+        return {
+          success: true,
+          output: result,
+          requiresApproval: true,
+          message: `${task.name} 执行完成，等待确认`
+        }
+      }
+
+      return {
+        success: true,
+        output: result,
+        message: `${task.name} 执行完成`
+      }
+
+    } catch (error: any) {
+      console.error(`[Director] Task execution failed: ${task.type}`, error)
+
+      // 使用 TaskService 处理失败
+      const canRetry = await taskService.handleFailure(dbTask.id, error.message)
+      this.broadcastTaskFailed(context, dbTask.id, error.message, canRetry)
+
+      // 如果超过重试次数，返回用户
+      if (!canRetry) {
+        this.broadcastTaskWaitingUser(context, dbTask.id, '超过最大修改次数，请提供专业意见')
+      }
+
+      return {
+        success: false,
+        output: {},
+        message: error.message
+      }
+    }
+  }
+
+  /**
+   * 获取任务对应的执行人类型
+   */
+  private getAssigneeTypeForTask(taskType: string): string {
+    const typeMap: Record<string, string> = {
+      chunking: 'director',
+      analysis: 'director',
+      asset: 'asset',
+      asset_generation: 'asset',
+      storyboard: 'storyboard',
+      video: 'video',
+      video_generation: 'video',
+      editing: 'editing'
+    }
+    return typeMap[taskType] || 'director'
+  }
+
+  /**
+   * 获取执行人显示标签
+   */
+  private getAssigneeLabel(assigneeType?: string): string {
+    const labels: Record<string, string> = {
+      director: '总导演',
+      asset: '美术',
+      storyboard: '分镜',
+      video: '视频',
+      editing: '剪辑'
+    }
+    return assigneeType ? labels[assigneeType] || assigneeType : '待分配'
   }
 
   /**

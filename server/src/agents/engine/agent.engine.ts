@@ -5,6 +5,8 @@
 
 import { prisma } from '../../infrastructure/database/prisma'
 import { createMessage } from '../../services/message.service'
+import { directorAgent } from '../director/director.agent'
+import type { AgentContext, AgentResult } from '../base/agent.interface'
 
 // 重新导出新架构的核心组件
 export { AgentProfileLoader } from '../loader/agent-profile.loader'
@@ -33,31 +35,126 @@ export const agentEngine = {
   process: async (params: ProcessParams): Promise<void> => {
     const { sessionId, agentId, message, sendEvent } = params
 
-    console.log(`[AgentEngine] Processing session: ${sessionId}, agent: ${agentId || 'default'}, message: ${message.substring(0, 50)}...`)
+    console.log(`[AgentEngine] Processing session: ${sessionId}, agent: ${agentId || 'director'}, message: ${message.substring(0, 50)}...`)
 
     // 发送思考状态
-    sendEvent({ type: 'thinking', stage: 'understanding', content: '理解用户意图...' })
+    sendEvent({ type: 'thinking', stage: 'loading', content: '加载项目信息...' })
 
-    // 创建助手消息并保存到数据库
-    const assistantMessage = await createMessage({
-      sessionId,
-      role: 'assistant',
-      content: '我已收到您的消息。Agent Engine 正在重构中，完整功能稍后可用。',
-      employeeId: agentId || 'director'
-    })
+    try {
+      // 1. 获取会话信息（包含 projectId）
+      const session = await prisma.session.findUnique({
+        where: { id: sessionId }
+      })
 
-    // 发送助手消息（带 employeeId）
-    sendEvent({
-      type: 'message',
-      id: assistantMessage.id,
-      role: 'assistant',
-      content: assistantMessage.content,
-      employeeId: agentId || 'director',
-      createdAt: assistantMessage.createdAt.toISOString(),
-      order: assistantMessage.order.toString()
-    })
+      if (!session) {
+        sendEvent({ type: 'error', message: '会话不存在' })
+        return
+      }
 
-    sendEvent({ type: 'done', summary: '消息已接收' })
+      const metadata = session.metadata as any
+      const projectId = metadata?.projectId
+
+      if (!projectId) {
+        // 没有项目，直接返回简单响应
+        const assistantMessage = await createMessage({
+          sessionId,
+          role: 'assistant',
+          content: '我已收到您的消息。请先创建项目，我将帮助您制作短剧。',
+          employeeId: agentId || 'director'
+        })
+
+        sendEvent({
+          type: 'message',
+          id: assistantMessage.id,
+          role: 'assistant',
+          content: assistantMessage.content,
+          employeeId: agentId || 'director',
+          createdAt: assistantMessage.createdAt.toISOString(),
+          order: assistantMessage.order.toString()
+        })
+        sendEvent({ type: 'done', summary: '无项目会话完成' })
+        return
+      }
+
+      // 2. 加载项目信息
+      sendEvent({ type: 'thinking', stage: 'analyzing', content: '分析项目需求...' })
+
+      const project = await prisma.project.findUnique({
+        where: { id: projectId }
+      })
+
+      if (!project) {
+        sendEvent({ type: 'error', message: '项目不存在' })
+        return
+      }
+
+      // 3. 构建 Agent 上下文
+      const context: AgentContext = {
+        projectId,
+        userId: params.userId,
+        sessionId,
+        task: null,
+        level: 1,
+        history: [],
+        userFeedback: [],
+        preferences: {},
+        novelText: project.novelText || undefined,
+        userInput: message,
+        sendEvent  // 传入 WebSocket 广播函数
+      }
+
+      // 4. 执行 Director Agent
+      sendEvent({ type: 'thinking', stage: 'processing', content: 'Director Agent 正在处理...' })
+
+      const result: AgentResult = await directorAgent.execute(context)
+
+      // 5. 发送 Agent 响应
+      const responseContent = result.message || '处理完成'
+
+      const assistantMessage = await createMessage({
+        sessionId,
+        role: 'assistant',
+        content: responseContent,
+        employeeId: agentId || 'director'
+      })
+
+      sendEvent({
+        type: 'message',
+        id: assistantMessage.id,
+        role: 'assistant',
+        content: responseContent,
+        employeeId: agentId || 'director',
+        createdAt: assistantMessage.createdAt.toISOString(),
+        order: assistantMessage.order.toString(),
+        metadata: result.output
+      })
+
+      // 6. 发送完成事件
+      sendEvent({ type: 'done', summary: result.message || '处理完成' })
+
+    } catch (error: any) {
+      console.error('[AgentEngine] Error:', error)
+
+      // 发送错误消息
+      const errorMessage = await createMessage({
+        sessionId,
+        role: 'assistant',
+        content: `处理消息时发生错误: ${error.message}`,
+        employeeId: agentId || 'director'
+      })
+
+      sendEvent({
+        type: 'message',
+        id: errorMessage.id,
+        role: 'assistant',
+        content: errorMessage.content,
+        employeeId: agentId || 'director',
+        createdAt: errorMessage.createdAt.toISOString(),
+        order: errorMessage.order.toString()
+      })
+
+      sendEvent({ type: 'error', message: error.message })
+    }
   },
 
   processMessage: async (sessionId: string, message: string) => {

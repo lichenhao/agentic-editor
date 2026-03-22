@@ -144,6 +144,7 @@ model Task {
   id                 String     @id @default(uuid())
   projectId          String
   project            Project    @relation(fields: [projectId], references: [id])
+  sessionId          String?    // 关联的会话
   type               String
   name               String?    // 任务名称
   status             TaskStatus @default(PENDING)
@@ -158,12 +159,37 @@ model Task {
   executionLog       Json?      // ReAct 执行日志
   artifacts          Json?      // 产出物（结构化）
 
+  // 层级关系
+  parentTaskId       String?    // 父Task ID（顶级任务为空）
+  rootTaskId         String?    // 根Task ID（用于快速查询同一工作流）
+  assigneeType       String?    // 负责人类型: director, asset, storyboard, video, editing
+
+  // 依赖关系
+  dependsOn          String[]   // 依赖的Task ID数组（前置任务完成后才能执行）
+
+  // 执行信息
+  startedAt          DateTime?
+  completedAt        DateTime?
+
   retries            Int        @default(0)
+  error              String?    // 错误信息
   createdAt          DateTime   @default(now())
   updatedAt          DateTime   @updatedAt
 
+  // 层级关系
+  parentTask         Task?      @relation("TaskHierarchy", fields: [parentTaskId], references: [id])
+  childTasks         Task[]     @relation("TaskHierarchy")
+  rootTask           Task?      @relation("TaskRoot", fields: [rootTaskId], references: [id])
+  subTasks           Task[]     @relation("TaskRoot")
+
+  // 会话关系
+  session            Session?   @relation(fields: [sessionId], references: [id])
+
   @@index([projectId])
+  @@index([sessionId])
   @@index([status])
+  @@index([parentTaskId])
+  @@index([rootTaskId])
 }
 
 enum TaskStatus {
@@ -576,11 +602,16 @@ model Session {
   groupAgents Json?       // 参与的Agent类型列表
   projectId   String?     // 关联项目
 
+  // 任务会话状态
+  taskSessionState Json?       // 存储当前活跃的任务状态
+  lastActiveTaskId String?     // 最后活跃的Task ID
+
   createdAt  DateTime     @default(now())
   updatedAt  DateTime     @updatedAt
 
   contexts  Context[]
   summaries ContextSummary[]
+  tasks     Task[]
 
   @@index([userId])
   @@index([agentId])
