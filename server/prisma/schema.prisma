@@ -636,11 +636,17 @@ model Context {
   // 群聊支持
   projectId      String?  // 关联项目
 
+  // 新增：上下文标记
+  isContextMessage Boolean @default(true)  // 是否参与Agent上下文（false=只记录不参与推理）
+  taskId           String?                 // 关联任务ID
+  metadata         Json?                   // 扩展数据
+
   @@index([sessionId])
   @@index([createdAt])
   @@index([order])
   @@index([employeeId])
   @@index([projectId])
+  @@index([isContextMessage])  // 新增索引
 }
 
 // 上下文压缩摘要

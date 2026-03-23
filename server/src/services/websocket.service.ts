@@ -2,7 +2,8 @@ import { FastifyInstance } from 'fastify'
 import { WebSocketServer, WebSocket } from 'ws'
 import { prisma } from '../infrastructure/database/prisma'
 import { agentEngine } from '../agents/engine/agent.engine'
-import { createMessage } from './message.service'
+import { createMessage, createSystemRecord } from './message.service'
+import { recognizeIntent, getSuggestedResponse } from './intent-recognition.service'
 
 // WebSocket 连接管理
 interface Client {
@@ -370,7 +371,8 @@ async function processMessage(
     role: 'user',
     content: fullContent,
     attachments: attachments || [],
-    employeeId: 'user'  // 用户消息标记为 'user'
+    employeeId: 'user',  // 用户消息标记为 'user'
+    isContextMessage: true  // 参与Agent上下文
   })
 
   // 发送用户消息给客户端（带 id 和 timestamp）
@@ -384,21 +386,55 @@ async function processMessage(
     order: userMessage.order.toString()
   })
 
+  // ===== Phase 1: 意图识别 =====
+  console.log('[WebSocket] Recognizing user intent...')
+  const userIntent = await recognizeIntent(content, sessionId)
+  const intentSuggestion = getSuggestedResponse(userIntent)
+
+  console.log('[WebSocket] Intent recognized:', userIntent.type, 'confidence:', userIntent.confidence)
+
+  // ===== Phase 2: 检测并拆分小说内容（只记录不传给Agent） =====
+  const novelChunks = detectNovelContent(content)
+  if (novelChunks.length > 0) {
+    // 写入拆分结果（role: system, isContextMessage: false - 不参与Agent上下文）
+    await createSystemRecord(
+      sessionId,
+      JSON.stringify({ chapters: novelChunks, totalChunks: novelChunks.length }),
+      {
+        employeeId: 'system',
+        metadata: { type: 'novel_chunking' }
+      }
+    )
+    // 广播给前端展示
+    sendToSession(sessionId, {
+      type: 'chunking_complete',
+      totalChunks: novelChunks.length,
+      chapters: novelChunks
+    })
+  }
+
+  // ===== Phase 3: 根据意图处理 =====
+  // 使用 session 的 agentId 作为 employeeId
+  const agentEmployeeId = session?.agentId || 'director'
+
+  // 如果不需要继续执行，直接返回响应
+  if (!intentSuggestion.shouldContinueExecution) {
+    await handleIntentResponse(ws, sessionId, userIntent, intentSuggestion, agentEmployeeId)
+    return
+  }
+
   // 更新会话状态
   await prisma.session.update({
     where: { id: sessionId },
     data: { status: 'ACTIVE', updatedAt: new Date() }
   })
 
-  // 使用 session 的 agentId 作为 employeeId
-  const agentEmployeeId = session?.agentId || 'director'
-
   // 启动 Agent 引擎处理消息
   await agentEngine.process({
     sessionId,
     userId: client.userId,
     agentId: agentEmployeeId,
-    message: content, // 原始消息内容
+    message: content, // 原始消息内容（不包含拆分后的章节信息）
     attachments, // 附件信息
     sendEvent: (event: ServerMessage) => {
       console.log('[Server] Sending event:', event.type, event)
@@ -409,6 +445,217 @@ async function processMessage(
       sendToClient(ws, event)
     }
   })
+}
+
+/**
+ * 检测并拆分小说内容
+ * 返回章节列表（只用于记录，不传给Agent）
+ */
+function detectNovelContent(text: string): { id: string; title: string; content: string }[] {
+  const chunks: { id: string; title: string; content: string }[] = []
+
+  // 章节识别模式
+  const chapterPatterns = [
+    /^(第[一二三四五六七八九十百千\d]+[章卷篇部])\s*(.+)/,           // 第X章
+    /^(Chapter\s*\d+)\s*[:\-]?\s*(.+)/i,                              // Chapter X
+    /^(第[一二三四五六七八九十百千\d]+[节部])/i,                      // 第X节
+    /^【(.+)】/,                                                       // 【标题】
+  ]
+
+  // 简单检测：如果文本超过2000字，认为可能包含小说内容
+  if (text.length < 2000) {
+    return chunks
+  }
+
+  // 尝试识别章节标题
+  const lines = text.split('\n')
+  let currentChapter: { id: string; title: string; lines: string[] } | null = null
+
+  for (const line of lines) {
+    let isChapterTitle = false
+
+    for (const pattern of chapterPatterns) {
+      const match = line.match(pattern)
+      if (match) {
+        // 保存之前的章节
+        if (currentChapter) {
+          chunks.push({
+            id: currentChapter.id,
+            title: currentChapter.title,
+            content: currentChapter.lines.join('\n')
+          })
+        }
+
+        // 开始新章节
+        currentChapter = {
+          id: `chapter_${chunks.length + 1}`,
+          title: match[1] + (match[2] ? ' ' + match[2] : ''),
+          lines: []
+        }
+        isChapterTitle = true
+        break
+      }
+    }
+
+    if (!isChapterTitle && currentChapter) {
+      currentChapter.lines.push(line)
+    }
+  }
+
+  // 保存最后一个章节
+  if (currentChapter && currentChapter.lines.length > 0) {
+    chunks.push({
+      id: currentChapter.id,
+      title: currentChapter.title,
+      content: currentChapter.lines.join('\n')
+    })
+  }
+
+  return chunks
+}
+
+/**
+ * 处理非执行类意图响应
+ */
+async function handleIntentResponse(
+  ws: WebSocket,
+  sessionId: string,
+  userIntent: any,
+  suggestion: { shouldContinueExecution: boolean; shouldRequestApproval: boolean; message?: string },
+  agentEmployeeId: string
+) {
+  const { type } = userIntent
+
+  switch (type) {
+    case 'COMMUNICATION': {
+      // 简单问候/聊天
+      const responses: Record<string, string> = {
+        '你好': '您好！我是AI短剧制作助手，可以帮您将小说转换为短剧视频。请问有什么可以帮助您的？',
+        '谢谢': '不客气！如果有任何需求，请随时告诉我。',
+        '再见': '再见！期待下次为您服务。'
+      }
+
+      const lowerInput = userIntent.details.originalInput.toLowerCase()
+      let responseText = suggestion.message || '收到您的消息。请问有什么可以帮助您的？'
+
+      for (const [key, value] of Object.entries(responses)) {
+        if (lowerInput.includes(key)) {
+          responseText = value
+          break
+        }
+      }
+
+      const assistantMessage = await createMessage({
+        sessionId,
+        role: 'assistant',
+        content: responseText,
+        employeeId: agentEmployeeId,
+        isContextMessage: true
+      })
+
+      sendToClient(ws, {
+        type: 'message',
+        id: assistantMessage.id,
+        role: 'assistant',
+        content: responseText,
+        employeeId: agentEmployeeId,
+        createdAt: assistantMessage.createdAt.toISOString(),
+        order: assistantMessage.order.toString()
+      })
+      sendToClient(ws, { type: 'done', summary: '对话完成' })
+      break
+    }
+
+    case 'PROGRESS_QUERY': {
+      // 查询进度 - 从数据库获取任务状态
+      const session = await prisma.session.findUnique({
+        where: { id: sessionId },
+        include: { project: true }
+      })
+
+      let progressText = '暂无进行中的任务。'
+
+      if (session?.project) {
+        const projectId = session.project.id
+        const totalTasks = await prisma.task.count({ where: { projectId } })
+        const completedTasks = await prisma.task.count({
+          where: { projectId, status: 'COMPLETED' }
+        })
+        const inProgressTasks = await prisma.task.count({
+          where: { projectId, status: 'IN_PROGRESS' }
+        })
+        const waitingTasks = await prisma.task.count({
+          where: { projectId, status: 'WAITING_APPROVAL' }
+        })
+
+        progressText = `项目进度：\n` +
+          `- 总任务数：${totalTasks}\n` +
+          `- 已完成：${completedTasks}\n` +
+          `- 进行中：${inProgressTasks}\n` +
+          `- 等待确认：${waitingTasks}`
+
+        if (waitingTasks > 0) {
+          progressText += '\n\n有任务等待您的确认，请查看任务列表。'
+        }
+      }
+
+      const assistantMessage = await createMessage({
+        sessionId,
+        role: 'assistant',
+        content: progressText,
+        employeeId: agentEmployeeId,
+        isContextMessage: true
+      })
+
+      sendToClient(ws, {
+        type: 'message',
+        id: assistantMessage.id,
+        role: 'assistant',
+        content: progressText,
+        employeeId: agentEmployeeId,
+        createdAt: assistantMessage.createdAt.toISOString(),
+        order: assistantMessage.order.toString()
+      })
+      sendToClient(ws, { type: 'done', summary: '进度查询完成' })
+      break
+    }
+
+    case 'DIRECTION_CHANGE':
+    case 'NEW_REQUIREMENT': {
+      // 需要用户确认的新需求
+      const confirmMessage = suggestion.message || '收到您的需求，请确认后我将开始执行。'
+
+      sendToClient(ws, {
+        type: 'user_confirmation',
+        message: confirmMessage,
+        options: [
+          { id: 'confirm', label: '确认执行', description: '按照新需求继续执行' },
+          { id: 'cancel', label: '取消', description: '取消当前操作' }
+        ]
+      })
+      break
+    }
+
+    default:
+      // 其他情况继续执行
+      await prisma.session.update({
+        where: { id: sessionId },
+        data: { status: 'ACTIVE', updatedAt: new Date() }
+      })
+
+      await agentEngine.process({
+        sessionId,
+        userId: 'default-user',
+        agentId: agentEmployeeId,
+        message: userIntent.details.originalInput,
+        sendEvent: (event: ServerMessage) => {
+          if (event.type === 'message' && event.role === 'assistant') {
+            event.employeeId = agentEmployeeId
+          }
+          sendToClient(ws, event)
+        }
+      })
+  }
 }
 
 function sendToClient(ws: WebSocket, message: ServerMessage) {

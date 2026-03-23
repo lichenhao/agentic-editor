@@ -11,6 +11,9 @@ export interface CreateMessageParams {
   employeeId?: string  // 消息所属 Agent/职员 ID
   toolCalls?: any
   attachments?: any
+  isContextMessage?: boolean  // 是否参与Agent上下文（默认true）
+  taskId?: string             // 关联任务ID
+  metadata?: any              // 扩展数据
 }
 
 // 获取下一个序列号（同一毫秒内递增）
@@ -46,7 +49,10 @@ export async function createMessage(params: CreateMessageParams) {
       toolCalls: params.toolCalls,
       attachments: params.attachments,
       createdAt: now,
-      order
+      order,
+      isContextMessage: params.isContextMessage ?? true,
+      taskId: params.taskId,
+      metadata: params.metadata
     }
   })
 
@@ -128,5 +134,92 @@ export async function deleteMessage(id: string) {
 export async function clearSessionMessages(sessionId: string) {
   return await prisma.context.deleteMany({
     where: { sessionId }
+  })
+}
+
+// ============ 新增：上下文消息相关方法 ============
+
+/**
+ * 获取上下文消息（用于Agent推理）
+ * 只返回 isContextMessage = true 的消息
+ */
+export async function getContextMessages(sessionId: string, limit = 100, offset = 0) {
+  const messages = await prisma.context.findMany({
+    where: {
+      sessionId,
+      isContextMessage: true
+    },
+    orderBy: [
+      { createdAt: 'asc' },
+      { order: 'asc' },
+      { id: 'asc' }
+    ],
+    take: limit,
+    skip: offset
+  })
+
+  return messages
+}
+
+/**
+ * 创建系统记录（不参与Agent上下文）
+ * 用于章节拆分结果、任务状态变更等只记录不参与推理的内容
+ */
+export async function createSystemRecord(
+  sessionId: string,
+  content: string,
+  options?: {
+    employeeId?: string
+    taskId?: string
+    metadata?: any
+  }
+) {
+  return createMessage({
+    sessionId,
+    role: 'system',
+    content,
+    employeeId: options?.employeeId || 'system',
+    isContextMessage: false,  // 不参与Agent上下文
+    taskId: options?.taskId,
+    metadata: options?.metadata
+  })
+}
+
+/**
+ * 创建Agent工作产出（参与上下文）
+ */
+export async function createAgentOutput(
+  sessionId: string,
+  agentType: string,
+  content: string,
+  options?: {
+    toolCalls?: any
+    taskId?: string
+    metadata?: any
+  }
+) {
+  return createMessage({
+    sessionId,
+    role: 'assistant',
+    content,
+    employeeId: agentType,
+    isContextMessage: true,
+    toolCalls: options?.toolCalls,
+    taskId: options?.taskId,
+    metadata: options?.metadata
+  })
+}
+
+/**
+ * 创建用户消息（参与上下文）
+ */
+export async function createUserMessage(sessionId: string, content: string, attachments?: any) {
+  return createMessage({
+    sessionId,
+    role: 'user',
+    content,
+    employeeId: 'user',
+    isContextMessage: true,
+    attachments
   })
 }

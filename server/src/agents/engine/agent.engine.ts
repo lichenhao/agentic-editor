@@ -131,11 +131,21 @@ export const agentEngine = {
 
       // 6. 发送完成事件 - 只有不需要用户介入时才发送
       const requiresUserApproval = result.requiresApproval ||
-        (result.output && result.output.waitingApproval)
+        (result.output && result.output.waitingApproval) ||
+        (result.output && result.output.pendingTasks > 0) ||
+        (result.output && !result.output.allComplete)
+
       if (!requiresUserApproval) {
         sendEvent({ type: 'done', summary: result.message || '处理完成' })
       } else {
-        console.log('[AgentEngine] Skipping done event - waiting for user approval')
+        console.log('[AgentEngine] Skipping done event - waiting for user approval or tasks in progress')
+        // 广播当前任务状态
+        if (result.output?.waitingApproval) {
+          sendEvent({
+            type: 'task_waiting_approval',
+            message: result.message || '等待用户确认'
+          })
+        }
       }
 
     } catch (error: any) {

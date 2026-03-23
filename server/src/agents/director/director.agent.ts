@@ -17,6 +17,7 @@ import {
 } from '../base/agent.interface'
 import { taskService } from '../../services/task.service'
 import { createMessage } from '../../services/message.service'
+import { TaskStatus } from '@prisma/client'
 
 // WebSocket 广播函数类型（由 AgentEngine 传入）
 type BroadcastFunction = (event: any) => void
@@ -96,7 +97,14 @@ ReAct 思维链模式：
     // 0. 初始化：从数据库加载配置
     await this.initialize()
 
-    // 1. 加载项目信息
+    // 1. 尝试恢复执行状态（关键！支持中断后继续）
+    const executionState = await this.loadExecutionState(context.projectId)
+    if (executionState && !executionState.isComplete) {
+      console.log('[Director] Resuming from execution state, step:', executionState.currentStep)
+      return this.resumeFromState(context, executionState)
+    }
+
+    // 2. 加载项目信息
     const project = await prisma.project.findUnique({
       where: { id: context.projectId }
     })
@@ -104,10 +112,10 @@ ReAct 思维链模式：
       return { success: false, output: {}, message: 'Project not found' }
     }
 
-    // 2. 生成初始规划（Agent 自主规划）
+    // 3. 生成初始规划（Agent 自主规划）
     const initialPlan = await this.generatePlan(context, project.novelText || '')
 
-    // 3. 保存规划到数据库
+    // 4. 保存规划到数据库
     await this.savePlanToDb(context.projectId, initialPlan)
 
     // 广播规划生成完成
@@ -117,11 +125,100 @@ ReAct 思维链模式：
       plan: initialPlan
     })
 
-    // 4. ReAct 循环执行
+    // 5. ReAct 循环执行
     const executionResult = await this.reactLoop(context, project.novelText || '', initialPlan)
 
-    // 5. 编译最终结果（写入工作产出到消息表）
+    // 6. 编译最终结果（写入工作产出到消息表）
     return await this.compileReActResult(executionResult, context)
+  }
+
+  /**
+   * 从保存的状态恢复执行
+   */
+  private async resumeFromState(
+    context: AgentContext,
+    executionState: { currentStep: number; isComplete: boolean; plan?: AgentPlan }
+  ): Promise<AgentResult> {
+    console.log('[Director] Resuming execution, currentStep:', executionState.currentStep)
+
+    // 检查是否有未完成的任务
+    const activeTasks = await taskService.getActiveTasks(context.projectId)
+    const hasWaitingApproval = activeTasks.some(t => t.status === TaskStatus.WAITING_APPROVAL)
+    const hasInProgress = activeTasks.some(t => t.status === TaskStatus.IN_PROGRESS)
+
+    if (hasWaitingApproval) {
+      // 有任务等待确认，广播等待状态
+      this.broadcastProgress(context.projectId, {
+        type: 'waiting_for_approval',
+        message: '等待用户确认后继续执行',
+        taskCount: activeTasks.length
+      })
+
+      // 返回等待状态，不发送done
+      return {
+        success: true,
+        requiresApproval: true,
+        output: {
+          waitingApproval: true,
+          activeTasks: activeTasks.length
+        },
+        message: '等待用户确认'
+      }
+    }
+
+    // 恢复执行计划
+    let plan = executionState.plan
+    if (!plan) {
+      // 如果没有保存的计划，重新生成
+      const project = await prisma.project.findUnique({
+        where: { id: context.projectId }
+      })
+      if (project) {
+        plan = await this.generatePlan(context, project.novelText || '')
+      }
+    }
+
+    if (!plan) {
+      return { success: false, output: {}, message: '无法恢复执行计划' }
+    }
+
+    // 构建恢复状态
+    const state: ReActState = {
+      plan,
+      currentStep: executionState.currentStep,
+      observations: [],
+      artifacts: {}
+    }
+
+    // 继续ReAct循环
+    const result = await this.reactLoop(context, '', plan, state)
+
+    // 编译结果
+    return await this.compileReActResult(result, context)
+  }
+
+  /**
+   * 从数据库加载执行状态
+   */
+  private async loadExecutionState(projectId: string): Promise<{
+    currentStep: number
+    isComplete: boolean
+    plan?: AgentPlan
+  } | null> {
+    const project = await prisma.project.findUnique({
+      where: { id: projectId }
+    })
+
+    if (!project?.executionState) {
+      return null
+    }
+
+    const state = project.executionState as any
+    return {
+      currentStep: state.currentStep || 0,
+      isComplete: state.isComplete || false,
+      plan: project.agentPlan as AgentPlan | undefined
+    }
   }
 
   /**
@@ -240,9 +337,10 @@ ${novelText.slice(0, 5000)}
   private async reactLoop(
     context: AgentContext,
     novelText: string,
-    plan: AgentPlan
+    plan: AgentPlan,
+    existingState?: ReActState  // 可选：恢复执行时的已有状态
   ): Promise<ReActState> {
-    const state: ReActState = {
+    const state: ReActState = existingState || {
       plan,
       currentStep: 0,
       observations: [],
@@ -640,9 +738,10 @@ ${novelText.slice(0, 3000)}
 
   /**
    * 编译 ReAct 结果 - 将工作产出写入消息表
+   * 修复done发送条件：检查是否所有任务都完成
    */
   private async compileReActResult(state: ReActState, context: AgentContext): Promise<AgentResult> {
-    const { sessionId } = context
+    const { sessionId, projectId } = context
     const artifacts = state.artifacts
     const stepsCompleted = state.currentStep
 
@@ -657,20 +756,38 @@ ${novelText.slice(0, 3000)}
             sessionId,
             role: 'assistant',  // Agent 工作产出
             employeeId: this.type,  // director
-            content
+            content,
+            isContextMessage: true  // 参与Agent上下文
           })
         }
       }
     }
 
+    // 检查是否所有任务都完成（关键！决定是否发送done）
+    const activeTasks = await taskService.getActiveTasks(projectId)
+    const hasPendingTasks = activeTasks.length > 0
+    const hasWaitingApproval = activeTasks.some(t => t.status === TaskStatus.WAITING_APPROVAL)
+    const hasInProgress = activeTasks.some(t => t.status === TaskStatus.IN_PROGRESS)
+
+    // 全部完成才返回完成状态
+    const allComplete = !hasPendingTasks && !hasWaitingApproval && !hasInProgress
+
     return {
       success: true,
+      requiresApproval: hasWaitingApproval,  // 等待确认时不标记完成
       output: {
         artifacts,
         plan: state.plan,
-        stepsCompleted
+        stepsCompleted,
+        waitingApproval: hasWaitingApproval,
+        pendingTasks: activeTasks.length,
+        allComplete
       },
-      message: `完成 ${stepsCompleted} 个步骤的执行`
+      message: allComplete
+        ? `完成 ${stepsCompleted} 个步骤的执行`
+        : hasWaitingApproval
+          ? '等待用户确认'
+          : `还有 ${activeTasks.length} 个任务进行中`
     }
   }
 
