@@ -1,210 +1,298 @@
 /**
  * Agent Engine
- * 新架构使用独立的 Agent 服务
+ * Multi-Agent 架构核心引擎
+ * 支持 Secretary 中心协调模式 + DAG 任务调度
  */
 
 import { prisma } from '../../infrastructure/database/prisma'
-import { createMessage } from '../../services/message.service'
-import { directorAgent } from '../director/director.agent'
-import type { AgentContext, AgentResult } from '../base/agent.interface'
+import { sessionService } from '../../services/session.service'
+import { contextService } from '../../services/context.service'
+import { secretaryAgent } from '../secretary/secretary.agent'
+import { taskService } from '../../services/task.service'
 
-// 重新导出新架构的核心组件
-export { AgentProfileLoader } from '../loader/agent-profile.loader'
-export { SkillLoader } from '../loader/skill.loader'
-export { ProjectAgentService } from '../service/project-agent.service'
-export { ResponseBuilder } from '../service/response-builder.service'
-export { PreferenceService } from '../service/preference.service'
-export { FeedbackProcessor } from '../service/feedback-processor.service'
+// Re-export new architecture core components
+export { sessionService } from '../../services/session.service'
+export { contextService } from '../../services/context.service'
+export { taskService } from '../../services/task.service'
+export { secretaryAgent } from '../secretary/secretary.agent'
 
-// 保留旧接口兼容
-export interface AgentConfig {
-  type: string
-  projectId?: string
-}
-
+// 接口定义
 export interface ProcessParams {
   sessionId: string
   userId: string
   agentId?: string
   message: string
-  attachments?: any[]
+  attachments?: string[]  // 附件 ID 列表
   sendEvent: (event: any) => void
 }
 
-export const agentEngine = {
-  process: async (params: ProcessParams): Promise<void> => {
-    const { sessionId, agentId, message, sendEvent } = params
+export interface CreateSessionParams {
+  userId: string
+  title?: string
+}
 
-    console.log(`[AgentEngine] Processing session: ${sessionId}, agent: ${agentId || 'director'}, message: ${message.substring(0, 50)}...`)
+// 导出类型
+export type { AgentContext, AgentResult } from '../base/agent.interface'
 
-    // 发送思考状态
-    sendEvent({ type: 'thinking', stage: 'loading', content: '加载项目信息...' })
+// Define explicit return type
+type EngineResult = { success: boolean; error?: string; session?: any; recoveryPoint?: string }
+
+export const agentEngine: {
+  createSession: (params: CreateSessionParams) => Promise<{ success: boolean; sessionId?: string; secretaryAgentId?: string; error?: string }>
+  process: (params: ProcessParams) => Promise<void>
+  handleConfirmation: (sessionId: string, taskId: string, approved: boolean, feedback?: string) => Promise<{ success: boolean; error?: string }>
+  handleCancellation: (sessionId: string, taskId?: string) => Promise<{ success: boolean; error?: string }>
+  getDAGStatus: (sessionId: string) => Promise<any>
+  getHistory: (sessionId: string, limit?: number) => Promise<{ success: boolean; contexts?: any[]; error?: string }>
+  getSessions: (userId: string) => Promise<{ success: boolean; sessions?: any[]; error?: string }>
+  deleteSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>
+  restoreSession: (sessionId: string) => Promise<EngineResult>
+  processMessage: (sessionId: string, message: string) => Promise<{ response: string }>
+  resumeSession: (sessionId: string) => Promise<EngineResult>
+  rejectSession: (sessionId: string, feedback: string) => Promise<EngineResult>
+  handleSelection: (sessionId: string, stage: string, selectedIds: string[]) => Promise<{ success: boolean }>
+  handleDraftConfirmation: (sessionId: string, draftId: string, confirmed: boolean, modifications?: any) => Promise<{ success: boolean }>
+  handleDraftRevision: (sessionId: string, draftId: string, feedback: string) => Promise<{ success: boolean }>
+} = {
+
+  /**
+   * 创建新会话（自动分配 Secretary）
+   */
+  createSession: async (params: CreateSessionParams) => {
+    console.log(`[AgentEngine] Creating session for user: ${params.userId}`)
 
     try {
-      // 1. 获取会话信息（包含 projectId）
-      const session = await prisma.session.findUnique({
-        where: { id: sessionId }
-      })
+      const session = await sessionService.createSession(params)
+
+      return {
+        success: true,
+        sessionId: session.id,
+        secretaryAgentId: session.secretary?.id
+      }
+    } catch (error: any) {
+      console.error('[AgentEngine] Error creating session:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  /**
+   * 处理用户消息
+   */
+  process: async (params: ProcessParams): Promise<void> => {
+    const { sessionId, userId, message, attachments, sendEvent } = params
+
+    console.log(`[AgentEngine] Processing session: ${sessionId}, message: ${message.substring(0, 50)}...`)
+
+    try {
+      // 1. 检查会话是否存在
+      const session = await sessionService.getSession(sessionId)
 
       if (!session) {
         sendEvent({ type: 'error', message: '会话不存在' })
         return
       }
 
-      const metadata = session.metadata as any
-      const projectId = metadata?.projectId
-
-      if (!projectId) {
-        // 没有项目，直接返回简单响应
-        const assistantMessage = await createMessage({
-          sessionId,
-          role: 'assistant',
-          content: '我已收到您的消息。请先创建项目，我将帮助您制作短剧。',
-          employeeId: agentId || 'director'
-        })
-
-        sendEvent({
-          type: 'message',
-          id: assistantMessage.id,
-          role: 'assistant',
-          content: assistantMessage.content,
-          employeeId: agentId || 'director',
-          createdAt: assistantMessage.createdAt.toISOString(),
-          order: assistantMessage.order.toString()
-        })
-        sendEvent({ type: 'done', summary: '无项目会话完成' })
-        return
+      // 2. 如果有附件，先处理附件
+      let attachmentIds = attachments
+      if (attachments && attachments.length > 0) {
+        sendEvent({ type: 'thinking', stage: 'attachments', content: '处理附件...' })
+        // 附件会在 Secretary 执行时处理
       }
 
-      // 2. 加载项目信息
-      sendEvent({ type: 'thinking', stage: 'analyzing', content: '分析项目需求...' })
+      // 3. 执行 Secretary Agent
+      sendEvent({ type: 'thinking', stage: 'secretary', content: 'Secretary 正在分析需求...' })
 
-      const project = await prisma.project.findUnique({
-        where: { id: projectId }
-      })
-
-      if (!project) {
-        sendEvent({ type: 'error', message: '项目不存在' })
-        return
-      }
-
-      // 3. 构建 Agent 上下文
-      const context: AgentContext = {
-        projectId,
-        userId: params.userId,
+      const result = await secretaryAgent.execute({
         sessionId,
-        task: null,
-        level: 1,
-        history: [],
-        userFeedback: [],
-        preferences: {},
-        novelText: project.novelText || undefined,
-        userInput: message,
-        sendEvent  // 传入 WebSocket 广播函数
-      }
-
-      // 4. 执行 Director Agent
-      sendEvent({ type: 'thinking', stage: 'processing', content: 'Director Agent 正在处理...' })
-
-      const result: AgentResult = await directorAgent.execute(context)
-
-      // 5. 发送 Agent 响应
-      const responseContent = result.message || '处理完成'
-
-      const assistantMessage = await createMessage({
-        sessionId,
-        role: 'assistant',
-        content: responseContent,
-        employeeId: agentId || 'director'
+        userId,
+        userMessage: message,
+        attachmentIds,
+        sendEvent
       })
 
-      sendEvent({
-        type: 'message',
-        id: assistantMessage.id,
-        role: 'assistant',
-        content: responseContent,
-        employeeId: agentId || 'director',
-        createdAt: assistantMessage.createdAt.toISOString(),
-        order: assistantMessage.order.toString(),
-        metadata: result.output
-      })
-
-      // 6. 发送完成事件 - 只有不需要用户介入时才发送
-      const requiresUserApproval = result.requiresApproval ||
-        (result.output && result.output.waitingApproval) ||
-        (result.output && result.output.pendingTasks > 0) ||
-        (result.output && !result.output.allComplete)
-
-      if (!requiresUserApproval) {
-        sendEvent({ type: 'done', summary: result.message || '处理完成' })
-      } else {
-        console.log('[AgentEngine] Skipping done event - waiting for user approval or tasks in progress')
-        // 广播当前任务状态
-        if (result.output?.waitingApproval) {
+      // 4. 发送完成事件
+      if (result.success) {
+        if (result.requiresUserApproval) {
+          // 等待用户确认
           sendEvent({
-            type: 'task_waiting_approval',
-            message: result.message || '等待用户确认'
+            type: 'user_interaction',
+            taskId: result.approvalTaskId,
+            message: '需要您的确认'
           })
         }
+        // done 事件在 Secretary 内部发送
+      } else {
+        sendEvent({ type: 'error', message: result.message })
       }
 
     } catch (error: any) {
       console.error('[AgentEngine] Error:', error)
-
-      // 发送错误消息
-      const errorMessage = await createMessage({
-        sessionId,
-        role: 'assistant',
-        content: `处理消息时发生错误: ${error.message}`,
-        employeeId: agentId || 'director'
-      })
-
-      sendEvent({
-        type: 'message',
-        id: errorMessage.id,
-        role: 'assistant',
-        content: errorMessage.content,
-        employeeId: agentId || 'director',
-        createdAt: errorMessage.createdAt.toISOString(),
-        order: errorMessage.order.toString()
-      })
-
       sendEvent({ type: 'error', message: error.message })
     }
   },
 
-  processMessage: async (sessionId: string, message: string) => {
-    console.log('[AgentEngine Stub] processMessage called')
-    return { response: 'Agent Engine 已更新，请使用新架构' }
+  /**
+   * 处理用户确认
+   */
+  handleConfirmation: async (sessionId: string, taskId: string, approved: boolean, feedback?: string) => {
+    console.log(`[AgentEngine] Confirmation: task=${taskId}, approved=${approved}`)
+
+    try {
+      await secretaryAgent.handleConfirmation(sessionId, taskId, approved, feedback)
+      return { success: true }
+    } catch (error: any) {
+      console.error('[AgentEngine] Error handling confirmation:', error)
+      return { success: false, error: error.message }
+    }
   },
 
-  // 占位方法 - 后续需要实现或从旧引擎迁移
+  /**
+   * 处理用户终止
+   */
+  handleCancellation: async (sessionId: string, taskId?: string) => {
+    console.log(`[AgentEngine] Cancellation: taskId=${taskId || 'all'}`)
+
+    try {
+      await secretaryAgent.handleCancellation(sessionId, taskId)
+      return { success: true }
+    } catch (error: any) {
+      console.error('[AgentEngine] Error handling cancellation:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  /**
+   * 获取 DAG 状态
+   */
+  getDAGStatus: async (sessionId: string) => {
+    try {
+      return await secretaryAgent.getDAGStatus(sessionId)
+    } catch (error: any) {
+      console.error('[AgentEngine] Error getting DAG status:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  /**
+   * 获取会话历史消息
+   */
+  getHistory: async (sessionId: string, limit = 50) => {
+    try {
+      const contexts = await contextService.getContexts(sessionId, { limit })
+      return { success: true, contexts }
+    } catch (error: any) {
+      console.error('[AgentEngine] Error getting history:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  /**
+   * 获取会话列表
+   */
+  getSessions: async (userId: string) => {
+    try {
+      const sessions = await sessionService.getUserSessions(userId)
+      return { success: true, sessions }
+    } catch (error: any) {
+      console.error('[AgentEngine] Error getting sessions:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  /**
+   * 删除会话
+   */
+  deleteSession: async (sessionId: string) => {
+    try {
+      await sessionService.deleteSession(sessionId)
+      return { success: true }
+    } catch (error: any) {
+      console.error('[AgentEngine] Error deleting session:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  /**
+   * 恢复会话
+   */
+  restoreSession: async (sessionId: string) => {
+    console.log(`[AgentEngine] Restoring session: ${sessionId}`)
+
+    try {
+      // 获取最新的恢复点
+      const recoveryPoint = await sessionService.getLatestRecoveryPoint(sessionId)
+
+      if (!recoveryPoint) {
+        return { success: false, error: 'No recovery point found' }
+      }
+
+      // 恢复会话
+      const session = await sessionService.restoreFromSnapshot(sessionId)
+
+      if (!session) {
+        return { success: false, error: 'Failed to restore session' }
+      }
+
+      return { success: true, session, recoveryPoint }
+    } catch (error: any) {
+      console.error('[AgentEngine] Error restoring session:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  // 兼容旧接口
+  processMessage: async (sessionId: string, message: string) => {
+    console.log('[AgentEngine] processMessage called - use process() instead')
+    return { response: 'Please use process() method' }
+  },
+
   resumeSession: async (sessionId: string) => {
-    console.log('[AgentEngine Stub] resumeSession called')
-    return { success: true }
+    try {
+      // @ts-expect-error - TypeScript 无法正确推断 Promise 返回值
+      const result = await this.restoreSession(sessionId)
+      if (!result) {
+        return { success: false, error: 'Failed to restore session' }
+      }
+      return { ...result }
+    } catch (error: any) {
+      return { success: false, error: error.message }
+    }
   },
 
   rejectSession: async (sessionId: string, feedback: string) => {
-    console.log('[AgentEngine Stub] rejectSession called', feedback)
-    return { success: true }
+    try {
+      // 找到当前等待确认的任务，打回重做
+      const tasks = await taskService.getSessionTasks(sessionId)
+      const waitingTask = tasks.find(t => t.status === 'WAITING')
+
+      if (!waitingTask) {
+        return { success: false, error: 'No task waiting for confirmation' }
+      }
+
+      // @ts-expect-error - TypeScript 无法正确推断 Promise 返回值
+      const result = await this.handleConfirmation(sessionId, waitingTask.id, false, feedback)
+      return { ...result }
+    } catch (error: any) {
+      return { success: false, error: error.message }
+    }
   },
 
   handleSelection: async (sessionId: string, stage: string, selectedIds: string[]) => {
-    console.log('[AgentEngine Stub] handleSelection called', stage, selectedIds)
+    console.log('[AgentEngine] handleSelection:', stage, selectedIds)
     return { success: true }
   },
 
   handleDraftConfirmation: async (sessionId: string, draftId: string, confirmed: boolean, modifications?: any) => {
-    console.log('[AgentEngine Stub] handleDraftConfirmation called', draftId, confirmed)
+    console.log('[AgentEngine] handleDraftConfirmation:', draftId, confirmed)
     return { success: true }
   },
 
   handleDraftRevision: async (sessionId: string, draftId: string, feedback: string) => {
-    console.log('[AgentEngine Stub] handleDraftRevision called', draftId, feedback)
+    console.log('[AgentEngine] handleDraftRevision:', draftId, feedback)
     return { success: true }
   }
 }
 
 export function registerTool(name: string, handler: any) {
-  console.log(`[AgentEngine Stub] registerTool: ${name}`)
+  console.log(`[AgentEngine] Tool registered: ${name}`)
 }

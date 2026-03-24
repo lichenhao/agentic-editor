@@ -24,9 +24,9 @@ export function useWebSocket({ sessionId, onMessage }: UseWebSocketOptions = {})
         setIsConnected(true)
         setError(null)
 
-        // 如果有sessionId，自动加入
+        // 如果有sessionId，自动加入（适配新架构）
         if (sessionId) {
-          socket.send(JSON.stringify({ type: 'join_session', sessionId }))
+          socket.send(JSON.stringify({ type: 'JOIN_SESSION', payload: { sessionId } }))
         }
 
         resolve(socket)
@@ -57,7 +57,7 @@ export function useWebSocket({ sessionId, onMessage }: UseWebSocketOptions = {})
     }
   }, [ws])
 
-  // 发送消息
+  // 发送消息（适配新架构）
   const send = useCallback((message: WSClientMessage) => {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(message))
@@ -66,24 +66,24 @@ export function useWebSocket({ sessionId, onMessage }: UseWebSocketOptions = {})
     }
   }, [ws])
 
-  // 加入会话
+  // 加入会话（适配新架构）
   const joinSession = useCallback((sid: string) => {
-    send({ type: 'join_session', sessionId: sid })
+    send({ type: 'JOIN_SESSION', payload: { sessionId: sid } })
   }, [send])
 
-  // 发送聊天消息
-  const sendMessage = useCallback((content: string, attachments?: any[]) => {
-    send({ type: 'message', content, attachments })
+  // 发送聊天消息（适配新架构）
+  const sendMessage = useCallback((content: string, attachments?: string[]) => {
+    send({ type: 'SEND_MESSAGE', payload: { content, attachmentIds: attachments } })
   }, [send])
 
-  // 加载历史消息
-  const loadHistory = useCallback((sid: string, before?: string, limit = 50) => {
-    send({ type: 'load_history', sessionId: sid, before, limit })
+  // 加载历史消息（适配新架构）
+  const loadHistory = useCallback((sid: string, limit = 50) => {
+    send({ type: 'GET_HISTORY', payload: { sessionId: sid, limit } })
   }, [send])
 
-  // 加载产物
+  // 加载产物（适配新架构）
   const loadProducts = useCallback((sid: string) => {
-    send({ type: 'load_products', sessionId: sid })
+    send({ type: 'GET_PRODUCTS', payload: { sessionId: sid } })
   }, [send])
 
   // 订阅消息类型

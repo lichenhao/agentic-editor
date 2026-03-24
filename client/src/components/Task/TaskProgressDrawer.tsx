@@ -1,17 +1,9 @@
 import { useState } from 'react'
 import './TaskProgressDrawer.css'
+import { TaskInfo } from '../../types'
 
-export interface TaskInfo {
-  id: string
-  name: string
-  type: string
-  status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'WAITING_APPROVAL' | 'FAILED' | 'APPROVED' | 'NEEDS_REVISION'
-  assigneeType?: string
-  startedAt?: string
-  completedAt?: string
-  progress?: number
-  progressMessage?: string
-}
+// 导出 TaskInfo 以便其他模块使用
+export type { TaskInfo } from '../../types'
 
 interface TaskProgressDrawerProps {
   tasks: TaskInfo[]
@@ -21,32 +13,26 @@ interface TaskProgressDrawerProps {
 
 const STATUS_LABELS: Record<string, string> = {
   PENDING: '待执行',
-  IN_PROGRESS: '执行中',
+  RUNNING: '执行中',
+  WAITING: '等待中',
   COMPLETED: '已完成',
-  WAITING_APPROVAL: '待确认',
   FAILED: '失败',
-  APPROVED: '已通过',
-  NEEDS_REVISION: '需修改'
+  CANCELLED: '已取消'
 }
 
 const STATUS_COLORS: Record<string, string> = {
   PENDING: '#9ca3af',
-  IN_PROGRESS: '#3b82f6',
+  RUNNING: '#3b82f6',
+  WAITING: '#f59e0b',
   COMPLETED: '#10b981',
-  WAITING_APPROVAL: '#f59e0b',
   FAILED: '#ef4444',
-  APPROVED: '#10b981',
-  NEEDS_REVISION: '#f97316'
+  CANCELLED: '#6b7280'
 }
 
-const TYPE_LABELS: Record<string, string> = {
-  DIRECTOR_WORKFLOW: '总导演工作流',
-  TASK_CHUNKING: '分片处理',
-  TASK_ANALYSIS: '需求分析',
-  TASK_ASSET_GENERATION: '素材生成',
-  TASK_STORYBOARD: '故事板',
-  TASK_VIDEO_GENERATION: '视频生成',
-  TASK_EDITING: '剪辑'
+const EXECUTION_MODE_LABELS: Record<string, string> = {
+  SERIAL: '串行',
+  PARALLEL: '并行',
+  HYBRID: '混合'
 }
 
 export function TaskProgressDrawer({ tasks, isExpanded = false, onToggle }: TaskProgressDrawerProps) {
@@ -70,16 +56,9 @@ export function TaskProgressDrawer({ tasks, isExpanded = false, onToggle }: Task
     return `${hours}小时${minutes % 60}分钟`
   }
 
-  // 获取执行人显示
-  const getAssignee = (type?: string) => {
-    const labels: Record<string, string> = {
-      director: '总导演',
-      asset: '美术',
-      storyboard: '分镜',
-      video: '视频',
-      editing: '剪辑'
-    }
-    return type ? labels[type] || type : '待分配'
+  // 获取执行模式显示
+  const getExecutionMode = (mode?: string) => {
+    return mode ? EXECUTION_MODE_LABELS[mode] || mode : ''
   }
 
   return (
@@ -101,7 +80,7 @@ export function TaskProgressDrawer({ tasks, isExpanded = false, onToggle }: Task
               {tasks.map(task => (
                 <div key={task.id} className="task-item">
                   <div className="task-item-header">
-                    <span className="task-name">{task.name || TYPE_LABELS[task.type] || task.type}</span>
+                    <span className="task-name">{task.name}</span>
                     <span
                       className="task-status"
                       style={{ backgroundColor: STATUS_COLORS[task.status] }}
@@ -110,11 +89,16 @@ export function TaskProgressDrawer({ tasks, isExpanded = false, onToggle }: Task
                     </span>
                   </div>
                   <div className="task-item-meta">
-                    <span className="task-assignee">{getAssignee(task.assigneeType)}</span>
+                    {task.executionMode && (
+                      <span className="task-mode">{getExecutionMode(task.executionMode)}</span>
+                    )}
                     {task.startedAt && (
                       <span className="task-duration">{getDuration(task.startedAt, task.completedAt)}</span>
                     )}
                   </div>
+                  {task.progressMessage && (
+                    <div className="task-message">{task.progressMessage}</div>
+                  )}
                 </div>
               ))}
             </div>

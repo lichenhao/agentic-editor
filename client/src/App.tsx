@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { sessionApi, productApi, messageApi, uploadApi } from './services/api'
+import { sessionApi, productApi, uploadApi } from './services/api'
 import { getInstance, onMessage, send, onConnectionChange, loadSessionData } from './services/ws-singleton'
 import { ChatPanel } from './components/Chat/ChatPanel'
 import { Modal } from './components/Layout/Modal'
@@ -115,25 +115,43 @@ function App() {
 
   // ============ WebSocket 消息处理 ============
   useEffect(() => {
-    // 注册消息处理器
+    // 注册消息处理器（适配新架构）
     const unsubscribe = onMessage((data: any) => {
       switch (data.type) {
-        case 'session_joined':
-          if (data.messages && Array.isArray(data.messages)) {
-            const msgs = data.messages.map((m: any) => ({
-              ...m,
-              order: String(m.order)
-            })).sort((a: Message, b: Message) => {
-              const orderA = BigInt(a.order || '0')
-              const orderB = BigInt(b.order || '0')
-              return orderA < orderB ? -1 : orderA > orderB ? 1 : 0
-            })
+        // 会话相关
+        case 'SESSION_CREATED':
+          console.log('[WS] Session created:', data.payload?.sessionId)
+          break
+
+        case 'SESSION_JOINED':
+          if (data.payload?.messages && Array.isArray(data.payload.messages)) {
+            const msgs = data.payload.messages.map((m: any) => ({
+              id: m.id,
+              sessionId: m.sessionId,
+              role: m.role,
+              content: m.content,
+              sourceAgent: m.sourceAgent,
+              metadata: m.metadata,
+              createdAt: m.createdAt
+            })).sort((a: Message, b: Message) =>
+              new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+            )
             setMessages(msgs)
           }
           break
 
+        // Secretary 思考状态（适配新架构）
+        case 'SECRETARY_THINKING':
+          if (data.payload?.content) {
+            setThinkingStatus({
+              stage: data.payload.stage || '思考中',
+              content: data.payload.content
+            })
+          }
+          break
+
+        // 兼容旧版 thinking
         case 'thinking':
-          // Agent 正在工作中，显示状态卡片
           if (data.content) {
             setThinkingStatus({
               stage: data.stage || '思考中',
@@ -142,56 +160,122 @@ function App() {
           }
           break
 
-        case 'message':
-          // 收到 Agent 消息 - 只有包含有效内容才渲染
-          console.log('[WS] Received message:', data)
-          if (data.id && data.content) {
+        // 消息（适配新架构）
+        case 'MESSAGE':
+          // 收到消息 - 只有包含有效内容才渲染
+          const msgPayload = data.payload || data
+          if (msgPayload.id && msgPayload.content) {
             setMessages(prev => {
               const newMsg: Message = {
-                id: data.id,
-                role: data.role || 'assistant',
-                content: data.content,
-                employeeId: data.employeeId,
-                createdAt: data.createdAt || new Date().toISOString(),
-                order: String(data.order || Date.now())
+                id: msgPayload.id,
+                sessionId: msgPayload.sessionId || '',
+                role: msgPayload.role || 'assistant',
+                content: msgPayload.content,
+                sourceAgent: msgPayload.sourceAgent,
+                metadata: msgPayload.metadata,
+                createdAt: msgPayload.createdAt || new Date().toISOString()
               }
-              const order = BigInt(newMsg.order)
-              const index = prev.findIndex(m => BigInt(m.order || '0') > order)
+              const time = new Date(newMsg.createdAt).getTime()
+              const index = prev.findIndex(m => new Date(m.createdAt).getTime() > time)
               if (index === -1) return [...prev, newMsg]
               return [...prev.slice(0, index), newMsg, ...prev.slice(index)]
             })
           }
           break
 
+        // 兼容旧版 message
+        case 'message':
+          if (data.id && data.content) {
+            setMessages(prev => {
+              const newMsg: Message = {
+                id: data.id,
+                sessionId: data.sessionId || '',
+                role: data.role || 'assistant',
+                content: data.content,
+                sourceAgent: data.sourceAgent,
+                createdAt: data.createdAt || new Date().toISOString()
+              }
+              const time = new Date(newMsg.createdAt).getTime()
+              const index = prev.findIndex(m => new Date(m.createdAt).getTime() > time)
+              if (index === -1) return [...prev, newMsg]
+              return [...prev.slice(0, index), newMsg, ...prev.slice(index)]
+            })
+          }
+          break
+
+        // 完成（适配新架构）
+        case 'DONE':
+          console.log('[WS] Received done:', data)
+          setThinkingStatus(null)
+          break
+
+        // 兼容旧版 done
         case 'done':
-          // 完成，隐藏状态卡片 - 不渲染到消息列表
           console.log('[WS] Received done:', data)
           setThinkingStatus(null)
           break
 
         case 'error':
-          // 错误
+          console.error('[WS] Error:', data.payload?.message || data.message)
           break
 
-        // 任务相关消息
+        // 任务状态（适配新架构）
+        case 'TASK_STATUS':
+          const taskPayload = data.payload || data
+          if (taskPayload.taskId) {
+            setTasks(prev => {
+              const existing = prev.find(t => t.id === taskPayload.taskId)
+              if (existing) {
+                return prev.map(t =>
+                  t.id === taskPayload.taskId
+                    ? {
+                        ...t,
+                        status: taskPayload.status,
+                        progress: taskPayload.progress,
+                        progressMessage: taskPayload.message,
+                        startedAt: taskPayload.status === 'RUNNING' && !t.startedAt
+                          ? new Date().toISOString() : t.startedAt,
+                        completedAt: taskPayload.status === 'COMPLETED'
+                          ? new Date().toISOString() : t.completedAt
+                      }
+                    : t
+                )
+              } else {
+                // 新任务
+                return [...prev, {
+                  id: taskPayload.taskId,
+                  name: taskPayload.message || '任务',
+                  status: taskPayload.status,
+                  executionMode: 'SERIAL' as const,
+                  progress: taskPayload.progress,
+                  progressMessage: taskPayload.message,
+                  startedAt: taskPayload.status === 'RUNNING' ? new Date().toISOString() : undefined,
+                  completedAt: taskPayload.status === 'COMPLETED' ? new Date().toISOString() : undefined
+                }]
+              }
+            })
+          }
+          break
+
+        // 兼容旧版任务消息
         case 'task_created':
           setTasks(prev => [...prev, {
-            id: data.task.id,
-            name: data.task.name,
-            type: data.task.type,
-            status: data.task.status,
-            assigneeType: data.task.assigneeType
+            id: data.task?.id || '',
+            name: data.task?.name || '任务',
+            type: data.task?.type,
+            status: data.task?.status || 'PENDING',
+            executionMode: 'SERIAL' as const,
+            assigneeType: data.task?.assigneeType
           }])
           break
 
         case 'task_started':
           setTasks(prev => prev.map(t =>
-            t.id === data.taskId ? { ...t, status: 'IN_PROGRESS', startedAt: new Date().toISOString() } : t
+            t.id === data.taskId ? { ...t, status: 'RUNNING' as const, startedAt: new Date().toISOString() } : t
           ))
           break
 
         case 'task_progress':
-          // 更新任务进度百分比
           setTasks(prev => prev.map(t =>
             t.id === data.taskId
               ? { ...t, progress: data.progress, progressMessage: data.message }
@@ -201,19 +285,20 @@ function App() {
 
         case 'task_completed':
           setTasks(prev => prev.map(t =>
-            t.id === data.taskId ? { ...t, status: 'COMPLETED', completedAt: new Date().toISOString() } : t
+            t.id === data.taskId ? { ...t, status: 'COMPLETED' as const, completedAt: new Date().toISOString() } : t
           ))
           break
 
         case 'task_failed':
           setTasks(prev => prev.map(t =>
-            t.id === data.taskId ? { ...t, status: 'FAILED' } : t
+            t.id === data.taskId ? { ...t, status: 'FAILED' as const } : t
           ))
           break
 
         case 'task_waiting_approval':
+          // 兼容旧版，映射到 WAITING 状态
           setTasks(prev => prev.map(t =>
-            t.id === data.taskId ? { ...t, status: 'WAITING_APPROVAL' } : t
+            t.id === data.taskId ? { ...t, status: 'WAITING' as const } : t
           ))
           break
 
@@ -232,19 +317,23 @@ function App() {
           break
 
         case 'history_loaded':
+          // 兼容旧版历史消息
           if (data.messages && Array.isArray(data.messages)) {
             const newMessages = data.messages.map((m: any) => ({
-              ...m,
-              order: String(m.order)
+              id: m.id,
+              sessionId: m.sessionId,
+              role: m.role,
+              content: m.content,
+              sourceAgent: m.sourceAgent,
+              metadata: m.metadata,
+              createdAt: m.createdAt
             }))
             setMessages(prev => {
               const existingIds = new Set(prev.map(m => m.id))
               const unique = newMessages.filter((m: Message) => !existingIds.has(m.id))
-              return [...prev, ...unique].sort((a: Message, b: Message) => {
-                const orderA = BigInt(a.order || '0')
-                const orderB = BigInt(b.order || '0')
-                return orderA < orderB ? -1 : orderA > orderB ? 1 : 0
-              })
+              return [...prev, ...unique].sort((a: Message, b: Message) =>
+                new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+              )
             })
             setHasMore(data.hasMore)
           }
@@ -270,56 +359,66 @@ function App() {
 
     setCurrentSession(session)
 
-    // 从 metadata 获取 projectId
-    const metadata = session.metadata as any
-    const projectId = metadata?.projectId
-
-    if (projectId) {
-      try {
-        // 加载项目数据（暂时未使用）
-        await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3000'}/api/projects/${projectId}`)
-
-        // 使用 HTTP 加载产物
-        const productsRes = await productApi.list(session.id)
-        if (productsRes.products) {
-          setProducts(productsRes.products)
-        }
-
-        // 使用 HTTP 加载消息 (默认100条)
-        const messagesRes = await messageApi.list(session.id)
-        if (messagesRes.messages) {
-          setMessages(messagesRes.messages.map((m: any) => ({
-            ...m,
-            order: String(m.order)
-          })))
-          setHasMore(messagesRes.hasMore)
-        }
-      } catch (err) {
-        console.error('Failed to load project data:', err)
-      }
-    }
+    // 使用 loadSessionData 加载会话数据
+    loadSessionData(session.id, {
+      onMessages: (msgs) => setMessages(msgs),
+      onProducts: (prods) => setProducts(prods)
+    })
 
     // 切换 session - 单例会发送 join_session 消息
     getInstance(session.id)
   }, [currentSession])
 
-  // ============ 创建新会话 (HTTP) ============
-  const createSession = async () => {
-    try {
-      const data = await sessionApi.create(undefined, `新项目_${Date.now()}`)
-      if (data.session) {
-        // 更新 URL
-        window.history.pushState(null, '', `/chat/${data.session.id}`)
+  // ============ 创建新会话 (通过 WebSocket) ============
+  const createSession = useCallback(async () => {
+    // 通过 WebSocket 创建会话（确保连接已建立）
+    getInstance()
 
-        await loadSessionById(data.session.id)
+    return new Promise<void>((resolve) => {
+      const handleCreated = (data: any) => {
+        if (data.type === 'SESSION_CREATED' && data.payload?.sessionId) {
+          const newSessionId = data.payload.sessionId
+
+          // 更新 URL
+          window.history.pushState(null, '', `/chat/${newSessionId}`)
+
+          // 创建本地 session 对象
+          const newSession: Session = {
+            id: newSessionId,
+            userId: 'default-user',
+            title: '新会话',
+            secretaryType: 'secretary',
+            status: 'ACTIVE',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          }
+
+          setCurrentSession(newSession)
+          setSessions(prev => [newSession, ...prev])
+
+          // 加载会话数据
+          loadSessionData(newSessionId, {
+            onMessages: (msgs) => setMessages(msgs),
+            onProducts: (prods) => setProducts(prods)
+          })
+
+          // 移除监听器
+          removeListener()
+          resolve()
+        }
       }
-    } catch (err) {
-      console.error('Failed to create session:', err)
-    }
-  }
 
-  // ============ 创建新项目 (带弹窗输入) ============
-  const handleCreateProject = async () => {
+      const removeListener = onMessage(handleCreated)
+
+      // 发送创建会话消息
+      setTimeout(() => {
+        send('CREATE_SESSION', { payload: { title: `新会话_${Date.now()}` } })
+      }, 100)
+    })
+  }, [])
+
+  // ============ 创建新项目 (带弹窗输入 - 使用 WebSocket) ============
+  const handleCreateProject = useCallback(async () => {
     if (!newProjectName.trim()) {
       alert('请输入项目名称')
       return
@@ -327,32 +426,20 @@ function App() {
 
     setIsCreating(true)
     try {
-      const data = await sessionApi.create(undefined, newProjectName.trim())
-      if (data.session) {
-        // 重置弹窗状态
-        setShowCreateModal(false)
-        setNewProjectName('')
-        setNewProjectDesc('')
+      // 通过 WebSocket 创建会话
+      await createSession()
 
-        // 更新 URL
-        window.history.pushState(null, '', `/chat/${data.session.id}`)
-
-        // 加载新会话数据
-        await loadSessionById(data.session.id)
-
-        // 刷新会话列表
-        const historyRes = await sessionApi.history()
-        if (historyRes.sessions) {
-          setSessions(historyRes.sessions)
-        }
-      }
+      // 重置弹窗状态
+      setShowCreateModal(false)
+      setNewProjectName('')
+      setNewProjectDesc('')
     } catch (err) {
       console.error('Failed to create project:', err)
       alert('创建失败，请重试')
     } finally {
       setIsCreating(false)
     }
-  }
+  }, [newProjectName, createSession])
 
   // 删除按钮点击处理 - 使用事件代理
   const handleDeleteClick = (sessionId: string) => (e: React.MouseEvent) => {
@@ -391,13 +478,13 @@ function App() {
       createSession().then(() => {
         // 延迟一点等待会话创建完成
         setTimeout(() => {
-          send('message', { content })
+          send('SEND_MESSAGE', { payload: { content } })
         }, 100)
       })
       return
     }
 
-    const success = send('message', { content, sessionId: currentSession.id })
+    const success = send('SEND_MESSAGE', { payload: { sessionId: currentSession.id, content } })
     if (!success) {
       console.warn('[Chat] Failed to send message')
     }
@@ -412,10 +499,12 @@ function App() {
 
     const oldestMsg = messages[0]
     if (oldestMsg) {
-      send('load_history', {
-        sessionId: currentSession.id,
-        before: oldestMsg.id,
-        limit: 50
+      send('GET_HISTORY', {
+        payload: {
+          sessionId: currentSession.id,
+          before: oldestMsg.id,
+          limit: 50
+        }
       })
     }
   }, [hasMore, currentSession, messages])
@@ -472,8 +561,7 @@ function App() {
   }, [])
 
   // ============ 渲染 ============
-  const metadata = currentSession?.metadata as any
-  const projectName = metadata?.projectName || '未命名项目'
+  const projectName = currentSession?.title || '未命名会话'
 
   return (
     <>
@@ -482,7 +570,6 @@ function App() {
         <aside className="aside-left">
           <div className="project-list">
             {sessions.map((session) => {
-              const m = session.metadata as any
               return (
                 <div
                   key={session.id}
@@ -491,7 +578,7 @@ function App() {
                 >
                   <span className="project-item-icon">📁</span>
                   <div className="project-item-info">
-                    <span className="project-item-name">{m?.projectName || '未命名'}</span>
+                    <span className="project-item-name">{session.title || '未命名'}</span>
                     <span className="project-item-date">
                       {new Date(session.createdAt).toLocaleDateString()}
                     </span>
@@ -563,7 +650,7 @@ function App() {
                 <div className="product-item-info">
                   <span className="product-item-name">{product.name}</span>
                   <span className="product-item-meta">
-                    {product.creatorAgentId} · {new Date(product.createdAt).toLocaleDateString()}
+                    {product.agentType} · {new Date(product.createdAt).toLocaleDateString()}
                   </span>
                 </div>
               </div>

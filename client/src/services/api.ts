@@ -1,67 +1,57 @@
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000'
 
-// 会话相关API
+// 会话相关API（适配新架构）
 export const sessionApi = {
-  // 创建新会话
-  create: async (agentId?: string, projectName?: string) => {
-    const res = await fetch(`${API_BASE}/api/chat/sessions`, {
+  // 创建新会话（适配新架构 - 使用 secretary）
+  create: async (title?: string) => {
+    const res = await fetch(`${API_BASE}/api/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agentId, projectName })
+      body: JSON.stringify({ title })
     })
     return res.json()
   },
 
   // 获取会话详情
   get: async (sessionId: string) => {
-    const res = await fetch(`${API_BASE}/api/chat/sessions/${sessionId}`)
+    const res = await fetch(`${API_BASE}/api/sessions/${sessionId}`)
     return res.json()
   },
 
   // 获取会话列表
   list: async () => {
-    const res = await fetch(`${API_BASE}/api/chat/sessions`)
+    const res = await fetch(`${API_BASE}/api/sessions`)
     return res.json()
   },
 
-  // 获取会话历史
+  // 获取会话历史（适配新架构）
   history: async () => {
-    const res = await fetch(`${API_BASE}/api/chat/history`)
+    const res = await fetch(`${API_BASE}/api/sessions?orderBy=updatedAt&order=desc`)
     return res.json()
   },
 
   // 删除会话
   delete: async (sessionId: string) => {
-    const res = await fetch(`${API_BASE}/api/chat/sessions/${sessionId}`, {
+    const res = await fetch(`${API_BASE}/api/sessions/${sessionId}`, {
       method: 'DELETE'
     })
     return res.json()
   }
 }
 
-// 消息相关API
+// 消息相关API（适配新架构 - 使用 Context 表）
 export const messageApi = {
-  // 获取消息（默认最近100条，支持分页）
-  list: async (sessionId: string, before?: string, limit = 100) => {
-    const params = new URLSearchParams()
-    if (before) params.set('before', before)
-    if (limit) params.set('limit', String(limit))
-
+  // 获取上下文（对应 Context 表）
+  list: async (sessionId: string, limit = 100) => {
     const res = await fetch(
-      `${API_BASE}/api/chat/sessions/${sessionId}/messages?${params}`
+      `${API_BASE}/api/sessions/${sessionId}/contexts?limit=${limit}`
     )
     return res.json()
   },
 
-  // 获取消息总数
-  count: async (sessionId: string) => {
-    const res = await fetch(`${API_BASE}/api/chat/sessions/${sessionId}/messages/count`)
-    return res.json()
-  },
-
-  // 获取上下文（旧接口）
+  // 获取上下文（旧接口兼容）
   contexts: async (sessionId: string) => {
-    const res = await fetch(`${API_BASE}/api/chat/sessions/${sessionId}/contexts`)
+    const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/contexts`)
     return res.json()
   }
 }
@@ -173,9 +163,9 @@ export const websocketApi = {
 
       ws.onopen = () => {
         console.log('[WS] Connected')
-        // 如果有sessionId，自动加入
+        // 如果有sessionId，自动加入（适配新架构）
         if (sessionId) {
-          ws?.send(JSON.stringify({ type: 'join_session', sessionId }))
+          ws?.send(JSON.stringify({ type: 'JOIN_SESSION', payload: { sessionId } }))
         }
         resolve(ws!)
       }
@@ -238,24 +228,24 @@ export const websocketApi = {
     }
   },
 
-  // 加入会话
+  // 加入会话（适配新架构）
   joinSession: (sessionId: string) => {
-    websocketApi.send({ type: 'join_session', sessionId })
+    websocketApi.send({ type: 'JOIN_SESSION', payload: { sessionId } })
   },
 
-  // 发送聊天消息
-  sendMessage: (content: string, attachments?: any[]) => {
-    websocketApi.send({ type: 'message', content, attachments })
+  // 发送聊天消息（适配新架构）
+  sendMessage: (content: string, attachments?: string[]) => {
+    websocketApi.send({ type: 'SEND_MESSAGE', payload: { content, attachmentIds: attachments } })
   },
 
-  // 加载历史消息
-  loadHistory: (sessionId: string, before?: string, limit = 50) => {
-    websocketApi.send({ type: 'load_history', sessionId, before, limit })
+  // 加载历史消息（适配新架构）
+  loadHistory: (sessionId: string, limit = 50) => {
+    websocketApi.send({ type: 'GET_HISTORY', payload: { sessionId, limit } })
   },
 
-  // 加载产物
+  // 加载产物（适配新架构）
   loadProducts: (sessionId: string) => {
-    websocketApi.send({ type: 'load_products', sessionId })
+    websocketApi.send({ type: 'GET_PRODUCTS', payload: { sessionId } })
   },
 
   // 获取连接状态

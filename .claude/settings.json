@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pkill -f \"tsx test-websocket\")",
+      "Bash(curl -s http://localhost:3000/health)",
+      "Bash(pkill -f \"tsx src/app\")",
+      "Bash(pkill -f \"prisma studio\")",
+      "Bash(node test-websocket.js)",
+      "Skill(update-config)",
+      "Skill(update-config:*)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(npx chrome-devtools-mcp@latest --help)",
+      "Bash(psql \"$DATABASE_URL\" -c \"SELECT id, title, \"\"secretaryType\"\", status FROM \"\"Session\"\" ORDER BY \"\"createdAt\"\" DESC LIMIT 3;\")",
+      "Bash(claude mcp:*)",
+      "Read(//Users/ryota/**)",
+      "Bash(node -e \":*)",
+      "Bash(kill 16116)",
+      "Bash(npm list:*)",
+      "Bash(git -C /Users/ryota/works/agentic-editor status --short server/src/)"
+    ],
+    "additionalDirectories": [
+      "/Users/ryota"
+    ]
+  }
+}

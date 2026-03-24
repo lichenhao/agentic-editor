@@ -1,4 +1,4 @@
-import { WorkProduct, AGENT_CONFIG } from '../../types'
+import { WorkProduct, AGENT_CONFIG, ProductType } from '../../types'
 
 interface ProductCardProps {
   product: WorkProduct
@@ -6,20 +6,17 @@ interface ProductCardProps {
 }
 
 export function ProductCard({ product, onClick }: ProductCardProps) {
-  const agentConfig = product.creatorAgentId ? AGENT_CONFIG[product.creatorAgentId] : null
+  const agentConfig = product.agentType ? AGENT_CONFIG[product.agentType] : null
 
   // 根据类型获取图标
-  const getTypeIcon = (type: string) => {
+  const getTypeIcon = (type: ProductType) => {
     switch (type) {
       case 'IMAGE': return '🖼️'
       case 'VIDEO': return '🎬'
-      case 'AUDIO': return '🎵'
       case 'TEXT': return '📄'
-      case 'JSON': return '📋'
       case 'CODE': return '💻'
-      case 'STORYBOARD': return '📝'
-      case 'SCRIPT': return '📜'
-      case 'ASSET': return '🎨'
+      case 'FILE': return '📁'
+      case 'DATA': return '📊'
       default: return '📦'
     }
   }

@@ -1,4 +1,4 @@
-import { WorkProduct, AGENT_CONFIG } from '../../types'
+import { WorkProduct, AGENT_CONFIG, ProductType } from '../../types'
 
 interface ProductViewerProps {
   product: WorkProduct | null
@@ -8,14 +8,14 @@ interface ProductViewerProps {
 export function ProductViewer({ product, onClose }: ProductViewerProps) {
   if (!product) return null
 
-  const agentConfig = product.creatorAgentId ? AGENT_CONFIG[product.creatorAgentId] : null
+  const agentConfig = product.agentType ? AGENT_CONFIG[product.agentType] : null
 
   // 渲染内容
   const renderContent = () => {
     // 如果有content直接显示
     if (product.content) {
-      // JSON 格式化显示
-      if (product.type === 'JSON') {
+      // JSON/CODE 格式化显示
+      if (product.type === 'CODE') {
         try {
           const json = JSON.parse(product.content)
           return (
@@ -58,15 +58,25 @@ export function ProductViewer({ product, onClose }: ProductViewerProps) {
     )
   }
 
+  // 获取类型图标
+  const getTypeIcon = (type: ProductType) => {
+    switch (type) {
+      case 'IMAGE': return '🖼️'
+      case 'VIDEO': return '🎬'
+      case 'CODE': return '💻'
+      case 'FILE': return '📁'
+      case 'DATA': return '📊'
+      default: return '📄'
+    }
+  }
+
   return (
     <div className="product-viewer-overlay" onClick={onClose}>
       <div className="product-viewer" onClick={(e) => e.stopPropagation()}>
         <div className="product-viewer-header">
           <div className="product-viewer-title">
             <span className="product-type-icon">
-              {product.type === 'IMAGE' ? '🖼️' :
-               product.type === 'VIDEO' ? '🎬' :
-               product.type === 'JSON' ? '📋' : '📄'}
+              {getTypeIcon(product.type)}
             </span>
             <h3>{product.name}</h3>
           </div>
@@ -88,8 +98,8 @@ export function ProductViewer({ product, onClose }: ProductViewerProps) {
               {new Date(product.createdAt).toLocaleString('zh-CN')}
             </span>
           </div>
-          {product.description && (
-            <p className="product-description">{product.description}</p>
+          {product.metadata?.description && (
+            <p className="product-description">{product.metadata.description}</p>
           )}
         </div>
       </div>

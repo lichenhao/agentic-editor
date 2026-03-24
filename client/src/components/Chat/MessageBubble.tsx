@@ -19,9 +19,9 @@ export function MessageBubble({ message }: MessageBubbleProps) {
     )
   }
 
-  // 获取Agent配置
-  const agentConfig = message.employeeId ? AGENT_CONFIG[message.employeeId] : null
-  const displayName = isUser ? '用户' : (agentConfig?.name || 'Agent')
+  // 获取Agent配置（适配新架构：使用 sourceAgent）
+  const agentConfig = message.sourceAgent ? AGENT_CONFIG[message.sourceAgent] : null
+  const displayName = isUser ? '用户' : (agentConfig?.name || '智能秘书')
   const color = agentConfig?.color || '#6b7280'
 
   const formatTime = (dateStr: string) => {

@@ -7,6 +7,11 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ============================================
+// Multi-Agent 架构 - 扁平化 Agent 系统
+// ============================================
+
+// User - 用户
 model User {
   id        String    @id @default(uuid())
   email     String    @unique
@@ -14,335 +19,167 @@ model User {
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
-  projects     Project[]
-  conversations Conversation[]
-  groups       Group[]
-  sessions     Session[]
+  sessions  Session[]
 }
 
+// ============================================
+// 用户输入类型枚举
+// ============================================
+
+enum UserInputType {
+  QUESTION     // 问题类：直接调用工具回答
+  REQUIREMENT  // 需求类：多轮沟通确认后执行
+  EXECUTION    // 执行类：直接分配任务
+}
+
+// 任务复杂度
+enum TaskComplexity {
+  SIMPLE       // 简单：直接执行，不过度拆分
+  MEDIUM       // 中等：轻度拆分，适度思考
+  COMPLEX      // 复杂：完整CoT，深度拆分，DAG执行
+}
+
+// 优化状态
+enum OptimizationStatus {
+  NORMAL
+  PENDING
+  OPTIMIZING
+  OPTIMIZED
+}
+
+// ============================================
+// 项目管理（新增）
+// ============================================
+
+// Project - 项目
 model Project {
-  id                String        @id @default(uuid())
-  userId            String
-  name              String
-  status            ProjectStatus @default(INITIALIZING)
-  novelFileUrl      String?
-  novelText         String?       @db.Text
-  outputs           Json?         // 产出物：分镜、脚本、配乐等
-  acceptanceCriteria Json?       // 验收标准
-  currentStage      String?       // 当前阶段
-  metadata          Json?         // 额外元数据
-
-  // Agent 自主规划数据
-  agentPlan         Json?         // Agent 规划结果：步骤、验收标准、产物规范
-  executionState    Json?         // 执行状态：当前步骤、观察历史
-  executionHistory  Json?         // 执行历史：所有 Thought/Action/Observation
-
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
-
-  user              User          @relation(fields: [userId], references: [id])
-  blueprint         Blueprint?
-  assets            Asset[]
-  shots             Shot[]
-  tasks             Task[]
-  snapshots         ProjectSnapshot[]
-  conversations     Conversation[]
-  agentInstances    AgentInstance[]
-  projectAgents     ProjectAgent[]
-
-  @@index([userId])
-  @@index([status])
-}
-
-enum ProjectStatus {
-  INITIALIZING
-  CHUNKING
-  ANALYZING
-  ASSET_GENERATION
-  STORYBOARDING
-  PRODUCING
-  EDITING
-  WAITING_APPROVAL
-  COMPLETED
-  FAILED
-  NEEDS_REVISION
-}
-
-model Blueprint {
-  id             String   @id @default(uuid())
-  projectId      String   @unique
-  project        Project  @relation(fields: [projectId], references: [id])
-  worldSettings  Json
-  characters     Json
-  narrativeBeats Json
-  version        Int      @default(1)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-}
-
-model Asset {
-  id            String   @id @default(uuid())
-  projectId     String
-  project       Project  @relation(fields: [projectId], references: [id])
-  type          String
-  name          String
-  profile       Json
-  anchorFileUrl String?
-  assetUrls     String[]
-  version       Int      @default(1)
-  createdAt     DateTime @default(now())
-
-  @@index([projectId])
-}
-
-model Shot {
-  id             String        @id @default(uuid())
-  projectId      String
-  project        Project       @relation(fields: [projectId], references: [id])
-  sceneId        String
-  chunkId        String?
-
-  // 分镜信息
-  shotType       String        // 镜头类型：近景/远景/特写/中景
-  cameraMovement String        // 运镜方式：推/拉/摇/移/跟/固定
-  description    String        @db.Text  // 画面描述
-  dialogue       String?       // 对白/旁白
-  mood           String?       // 情绪/氛围
-  duration       Int?          // 预估时长(秒)
-
-  // 角色参与
-  characterIds   String[]      // 参与此分镜的角色ID列表
-
-  // 生成结果
-  assetRefs      String[]
-  status         ShotStatus    @default(PENDING)
-  resultUrl      String?       // 最终视频URL
-
-  // 图片相关（新增）
-  imageUrl       String?       // 生成的图片
-  imagePrompt    String?       // 图片生成提示词
-
-  // 音频相关（新增）
-  audioUrl       String?       // 对应音频
-  lipSyncData    Json?         // 口型同步数据
-
-  error          String?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-
-  @@index([projectId])
-}
-
-enum ShotStatus {
-  PENDING
-  IN_PROGRESS
-  COMPLETED
-  FAILED
-}
-
-model Task {
-  id                 String     @id @default(uuid())
-  projectId          String
-  project            Project    @relation(fields: [projectId], references: [id])
-  sessionId          String?    // 关联的会话
-  type               String
-  name               String?    // 任务名称
-  status             TaskStatus @default(PENDING)
-  payload            Json
-  result             Json?
-  outputs            Json?      // 单任务产出物
-  acceptanceCriteria Json?      // 验收标准
-  feedback           String?    // 用户反馈
-
-  // Agent 自主规划数据
-  plan               Json?      // 该任务的规划
-  executionLog       Json?      // ReAct 执行日志
-  artifacts          Json?      // 产出物（结构化）
-
-  // 层级关系
-  parentTaskId       String?    // 父Task ID（顶级任务为空）
-  rootTaskId         String?    // 根Task ID（用于快速查询同一工作流）
-  assigneeType       String?    // 负责人类型: director, asset, storyboard, video, editing
-
-  // 依赖关系
-  dependsOn          String[]   // 依赖的Task ID数组（前置任务完成后才能执行）
-
-  // 执行信息
-  startedAt          DateTime?
-  completedAt        DateTime?
-
-  retries            Int        @default(0)
-  error              String?    // 错误信息
-  createdAt          DateTime   @default(now())
-  updatedAt          DateTime   @updatedAt
-
-  // 层级关系
-  parentTask         Task?      @relation("TaskHierarchy", fields: [parentTaskId], references: [id])
-  childTasks         Task[]     @relation("TaskHierarchy")
-  rootTask           Task?      @relation("TaskRoot", fields: [rootTaskId], references: [id])
-  subTasks           Task[]     @relation("TaskRoot")
-
-  // 会话关系
-  session            Session?   @relation(fields: [sessionId], references: [id])
-
-  @@index([projectId])
-  @@index([sessionId])
-  @@index([status])
-  @@index([parentTaskId])
-  @@index([rootTaskId])
-}
-
-enum TaskStatus {
-  PENDING
-  IN_PROGRESS
-  COMPLETED
-  WAITING_APPROVAL
-  APPROVED
-  NEEDS_REVISION
-  FAILED
-}
-
-model ProjectSnapshot {
-  id        String   @id @default(uuid())
-  projectId String
-  project   Project  @relation(fields: [projectId], references: [id])
-  phase     String
-  data      Json
-  createdAt DateTime @default(now())
-
-  @@index([projectId])
-}
-
-// Agent 实例表 - 存储每个 Agent 的运行实例
-model AgentInstance {
   id            String    @id @default(uuid())
-  agentType     String    // director, chunking, analysis, asset, storyboard, video, editing
-  projectId     String?
-  parentAgentId String?   // 父 Agent ID
-  level         Int       @default(1)  // 层级 1-3
-  status        String    @default("IDLE")  // IDLE, RUNNING, WAITING, COMPLETED, FAILED
-  currentTask   String?   // 当前执行的任务
-  context       Json?     // Agent 上下文（记忆、偏好等）
-  iteration     Int       @default(0)  // 迭代次数
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-
-  project       Project?        @relation(fields: [projectId], references: [id])
-  parentAgent   AgentInstance?  @relation("AgentHierarchy", fields: [parentAgentId], references: [id])
-  childAgents   AgentInstance[] @relation("AgentHierarchy")
-  executions    AgentExecution[]
-
-  @@index([projectId])
-  @@index([parentAgentId])
-  @@index([agentType, projectId])
-}
-
-// Agent 执行记录
-model AgentExecution {
-  id              String    @id @default(uuid())
-  agentInstanceId String
-  taskId          String?   // 对应的 Task ID
-  input           Json      // 输入
-  output          Json?     // 输出
-  status          String    // PENDING, RUNNING, COMPLETED, FAILED
-  error           String?
-  duration        Int?      // 执行时长(ms)
-  createdAt       DateTime  @default(now())
-
-  agentInstance   AgentInstance @relation(fields: [agentInstanceId], references: [id])
-
-  @@index([agentInstanceId])
-  @@index([taskId])
-}
-
-// Agent 学习记录 - 存储用户反馈用于 Agent 迭代
-model AgentLearning {
-  id          String   @id @default(uuid())
-  agentType   String   // Agent 类型
-  projectId   String?  // 项目 ID
-  feedback    String   // 用户反馈
-  improvement Json?    // 改进建议
-  applied     Boolean  @default(false)
-  createdAt   DateTime @default(now())
-
-  @@index([agentType])
-  @@index([projectId])
-}
-
-// ============================================
-// 新增：Agent 双层架构模型
-// ============================================
-
-// Agent 主设定 - 通用能力定义（虚拟职员的"简历"）
-model AgentProfile {
-  id            String    @id @default(uuid())
-  type          String    @unique  // director, specialist, manager
+  userId        String
   name          String
-  role          String    // 角色：职业经理人/专家/执行者
   description   String?
 
-  // 主设定核心 - 通用能力
-  corePrompt    String    @db.Text  // 核心身份设定
-  decisionLogic String    @db.Text  // 决策逻辑
-
-  // 元数据
-  level         Int       @default(1)  // 层级
-  parentType    String?
-  isActive      Boolean   @default(true)
+  // 项目配置
+  agentTeam     Json?     // 项目专属的虚拟员工团队配置
 
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
   // 关联
-  skillBindings    AgentSkillBinding[]
-  projectBindings  ProjectAgent[]
+  sessions      Session[]
+  performances  AgentPerformance[]
 
-  @@index([type])
-  @@index([isActive])
+  @@index([userId])
 }
 
-// 项目专属 Agent 绑定 - 项目专属配置
-model ProjectAgent {
+// AgentPerformance - 数字员工绩效考核
+model AgentPerformance {
   id                  String    @id @default(uuid())
   agentType           String
-  projectId           String
+  projectId           String?
 
-  // 项目专属配置 - 工作流程和验收标准在这里定义
-  calibrationPrompt   String?   @db.Text  // 校准后的工作流程
-  acceptanceCriteria  Json?     // 该项目的验收标准
-  workflow            Json?     // 工作流定义
+  // 考核指标
+  totalTasks          Int       @default(0)
+  successCount        Int       @default(0)
+  failCount           Int       @default(0)
+  rejectCount         Int       @default(0)
+  avgDuration         Float     @default(0)    // 平均耗时（秒）
 
-  // 运行时状态
-  status              String    @default("IDLE")  // IDLE, RUNNING, WAITING, COMPLETED, FAILED
-  context             Json?     // 记忆、偏好
+  // 自我优化触发
+  rejectStreak        Int       @default(0)    // 连续被打回次数
+  lastRejectAt        DateTime?
+
+  // 优化状态
+  optimizationStatus  OptimizationStatus @default(NORMAL)
+  optimizationLog     Json?
 
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
   // 关联
-  agent   AgentProfile @relation(fields: [agentType], references: [type])
-  project Project      @relation(fields: [projectId], references: [id])
+  project             Project?  @relation(fields: [projectId], references: [id])
 
   @@unique([agentType, projectId])
-  @@index([projectId])
+  @@index([agentType])
 }
 
-// Agent 技能绑定 - 虚拟职员具备的技能
+// Agent 类型枚举
+enum AgentRole {
+  SECRETARY   // 通用智能助理（秘书）
+  SPECIALIST  // 领域专家
+  TOOL        // 工具人
+}
+
+// 任务执行模式
+enum ExecutionMode {
+  SERIAL      // 串行
+  PARALLEL    // 并行
+  HYBRID      // 混合
+}
+
+// 会话状态
+enum SessionStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+// 产出物类型
+enum ProductType {
+  TEXT
+  CODE
+  FILE
+  IMAGE
+  VIDEO
+  DATA
+}
+
+// ============================================
+// 核心模型
+// ============================================
+
+// AgentProfile - 员工档案（扁平化角色）
+model AgentProfile {
+  id              String    @id @default(uuid())
+  type            String    @unique  // secretary, specialist, tool
+  name            String
+  role            AgentRole
+
+  // 身份设定
+  corePrompt      String    @db.Text     // 核心身份设定
+  decisionLogic   String    @db.Text     // CoA 决策逻辑
+
+  // 能力配置
+  maxConcurrentTasks Int   @default(3)
+  timeout            Int   @default(300)
+  retryCount         Int   @default(3)
+
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // 关联
+  skills        AgentSkillBinding[]
+  instances     AgentInstance[]
+
+  @@index([type])
+  @@index([role])
+  @@index([isActive])
+}
+
+// AgentSkillBinding - Agent 与 Skill 关联
 model AgentSkillBinding {
-  id        String       @id @default(uuid())
-  agentType String
-  skillId   String
+  id          String       @id @default(uuid())
+  agentType   String
+  skillId     String
+  config      Json?        // { priority, enabled, customPrompt }
 
-  // 该 Agent 对此技能的特定配置
-  config    Json?        // { priority, enabled, customPrompt }
-
-  agent     AgentProfile @relation(fields: [agentType], references: [type])
-  skill     SkillProfile @relation(fields: [skillId], references: [id])
+  agent       AgentProfile @relation(fields: [agentType], references: [type])
+  skill       SkillProfile @relation(fields: [skillId], references: [id])
 
   @@unique([agentType, skillId])
 }
 
-// Skill 技能定义 - 能力单元
+// SkillProfile - 技能档案
 model SkillProfile {
   id                 String    @id @default(uuid())
   type               String    @unique
@@ -376,7 +213,7 @@ model SkillProfile {
   @@index([isActive])
 }
 
-// 虚拟职员模板 - 可复用的 Agent 配置
+// VirtualEmployeeTemplate - 虚拟职员模板
 model VirtualEmployeeTemplate {
   id          String   @id @default(uuid())
   name        String
@@ -392,7 +229,7 @@ model VirtualEmployeeTemplate {
   @@index([agentType])
 }
 
-// 用户偏好模型 - 用户画像
+// UserPreferenceModel - 用户偏好
 model UserPreferenceModel {
   id                 String    @id @default(uuid())
   userId             String
@@ -410,348 +247,316 @@ model UserPreferenceModel {
   @@index([userId])
 }
 
-// Agent 定义表 - 存储 Agent 的配置（从数据库加载，非硬编码）
-model AgentDefinition {
-  id           String   @id @default(uuid())
-  type         String   @unique  // director, chunking, analysis, asset, storyboard, video, editing
-  name         String
-  description  String?
-  systemPrompt String?  @db.Text  // Agent 系统提示词
-  level        Int      @default(1)  // 层级：1=主Agent, 2=子Agent, 3=孙Agent
-  isActive     Boolean  @default(true)
-  config       Json?    // 额外配置
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+// ============================================
+// 会话级别模型（Multi-Agent 核心）
+// ============================================
 
-  skills       SkillDefinition[]
+// Session - 会话
+model Session {
+  id            String    @id @default(uuid())
+  projectId     String    // 所属项目
+  userId        String
+  title         String?
 
-  @@index([type])
-  @@index([isActive])
+  // 当前负责的 Secretary Agent
+  secretaryType String    @default("secretary")
+
+  // 会话状态
+  status        SessionStatus @default(ACTIVE)
+
+  // 上下文摘要（用于长会话压缩）
+  contextSummary String?  @db.Text
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // 关联
+  project       Project       @relation(fields: [projectId], references: [id])
+  user          User           @relation(fields: [userId], references: [id])
+  instances     AgentInstance[]
+  tasks         Task[]
+  contexts      Context[]
+  products      WorkProduct[]
+  attachments   Attachment[]
+  summaries     ContextSummary[]
+
+  @@index([projectId])
+  @@index([userId])
+  @@index([status])
 }
 
-// Skill 定义表 - 存储技能配置（从数据库加载，非硬编码）
-model SkillDefinition {
-  id              String   @id @default(uuid())
-  agentType       String   // 所属 Agent 类型
-  type            String   // skill 类型
-  name            String
-  description     String?
-  chainOfThought  String?  @db.Text  // 思维链 prompt
-  requireApproval Boolean  @default(false)
-  dependsOn       String[] // 依赖的其他 skills
-  order           Int      @default(0)  // 执行顺序
-  isActive        Boolean  @default(true)
-  config          Json?    // 额外配置（超时、重试等）
+// AgentInstance - Agent 运行实例
+model AgentInstance {
+  id            String    @id @default(uuid())
+  agentType     String    // secretary, specialist, tool
+  sessionId     String
 
-  // 工具定义（ReAct 模式使用）
-  isTool          Boolean  @default(false)  // 是否为工具
-  toolDefinition  Json?    // 工具定义：参数、返回值描述
-  agentToCall     String?  // 调用的 Agent 类型（子 Agent）
+  // 扁平化：只保留 role
+  role          AgentRole // secretary, specialist, tool
 
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  // 状态
+  status        String    @default("IDLE") // IDLE, RUNNING, WAITING, COMPLETED
 
-  agent           AgentDefinition? @relation(fields: [agentType], references: [type])
+  // 运行时上下文
+  context       Json?     // 记忆、偏好、临时状态
 
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // 关联
+  session       Session   @relation(fields: [sessionId], references: [id])
+  agent         AgentProfile? @relation(fields: [agentType], references: [type])
+  tasks         Task[]
+
+  @@index([sessionId])
   @@index([agentType])
-  @@index([type])
-  @@index([isActive])
 }
 
-model Conversation {
+// Task - 任务 (Multi-Agent 会话级别)
+model Task {
+  id            String    @id @default(uuid())
+  sessionId     String
+  agentInstanceId String?  // 执行此任务的 Agent
+
+  // 任务定义
+  name          String
+  description   String?
+  payload       Json?     // 任务输入数据
+
+  // 任务分析（新增）
+  inputType     UserInputType?  // QUESTION, REQUIREMENT, EXECUTION
+  complexity    TaskComplexity? // SIMPLE, MEDIUM, COMPLEX
+
+  // 执行模式
+  executionMode ExecutionMode @default(SERIAL)
+  status        String       @default("PENDING")
+
+  // 验收标准
+  acceptanceCriteria Json?  // { criteria: [], threshold: 0.8 }
+
+  // 结果
+  result        Json?     // 任务产出
+  error         String?   // 错误信息
+
+  // 时间戳
+  createdAt     DateTime  @default(now())
+  startedAt     DateTime?
+  completedAt   DateTime?
+
+  // 关联
+  session       Session       @relation(fields: [sessionId], references: [id])
+  agentInstance AgentInstance? @relation(fields: [agentInstanceId], references: [id])
+  dependencies  TaskDependency[] @relation("DependentTask")
+  dependents    TaskDependency[] @relation("DependencyTask")
+  products      WorkProduct[]
+
+  @@index([sessionId])
+  @@index([status])
+}
+
+// TaskDependency - 任务依赖关系（DAG 边）
+model TaskDependency {
   id             String    @id @default(uuid())
-  userId         String
-  user           User      @relation(fields: [userId], references: [id])
-  groupId        String?
-  group          Group?    @relation(fields: [groupId], references: [id])
-  projectId      String?
-  project        Project?  @relation(fields: [projectId], references: [id])
-  status         String    @default("active")
-  isArchived     Boolean   @default(false)    // 归档状态
-  isDeleted      Boolean   @default(false)    // 软删除
-  title          String?                   // 对话标题（从小说名提取）
-  genre          String?                   // 小说题材标签
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  taskId         String    // 依赖其他任务的任务
+  dependsOnId    String    // 被依赖的任务
 
-  messages Message[]
+  task           Task      @relation("DependentTask", fields: [taskId], references: [id])
+  dependsOn      Task      @relation("DependencyTask", fields: [dependsOnId], references: [id])
 
-  @@index([userId])
-  @@index([projectId])
-  @@index([groupId])
-  @@index([isArchived])
-  @@index([isDeleted])
+  @@unique([taskId, dependsOnId])
 }
 
-model Group {
-  id                 String   @id @default(uuid())
-  userId             String
-  user               User     @relation(fields: [userId], references: [id])
-  name               String
-  description        String?
-  isArchived         Boolean  @default(false)        // 分组归档状态
-  contextSharing     Boolean  @default(false)        // 上下文共享
-  skillsSharing      Boolean  @default(false)        // Skills经验共享
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+// Context - 上下文记录
+model Context {
+  id            String    @id @default(uuid())
+  sessionId     String
 
-  conversations Conversation[]
-
-  @@index([userId])
-  @@index([isArchived])
-}
-
-model Message {
-  id             String       @id @default(uuid())
-  conversationId String
-  conversation   Conversation @relation(fields: [conversationId], references: [id])
-  role           MessageRole
-  content        String       @db.Text
-  attachments    Json?
-  createdAt      DateTime     @default(now())
-
-  @@index([conversationId])
-}
-
-model UploadedFile {
-  id          String   @id @default(uuid())
-  fileName    String
-  fileSize    Int
-  contentType String
-  sha256      String   @unique  // SHA256 哈希值，用于唯一性检测
-  storageKey  String   // 存储路径
-  url         String   // 访问 URL
-  userId      String?  // 上传用户
-  projectId   String?  // 关联项目
-  createdAt   DateTime @default(now())
-
-  // 分片信息
-  chunks      FileChunk[]
-
-  @@index([sha256])
-  @@index([userId])
-  @@index([projectId])
-}
-
-// 文件分片模型 - 用于大文件智能拆分
-model FileChunk {
-  id            String   @id @default(uuid())
-  fileId        String
-  file          UploadedFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
-
-  // 分片信息
-  chunkIndex    Int      // 分片序号（从0开始）
-  chapterId     String?  // 章节ID（如果有）
-  chapterTitle  String?  // 章节标题
-  sectionTitle  String?  // 段落/小节标题
-  level         Int      @default(1)  // 层级：1-章节，2-小节，3-段落组
+  // 来源
+  role          String    // user, assistant, agent, system
+  sourceAgent   String?   // 产生此上下文的 Agent 类型
 
   // 内容
-  content       String   @db.Text  // 分片内容
-  charCount     Int      // 字符数
-  tokenEstimate Int?     // 预估token数
+  content       String    @db.Text
+  metadata      Json?     // { toolCalls: [], tokens: 123 }
 
-  // 位置信息
-  startOffset   Int      // 原文起始位置
-  endOffset     Int      // 原文结束位置
+  // 关联产物
+  productId     String?   // 关联的工作产出
 
-  createdAt     DateTime @default(now())
+  createdAt     DateTime  @default(now())
 
-  @@index([fileId])
-  @@index([chapterId])
-  @@index([fileId, chunkIndex])
-}
-
-enum MessageRole {
-  USER
-  ASSISTANT
-  SYSTEM
-}
-
-// 会话状态
-enum SessionStatus {
-  ACTIVE
-  WAITING_USER  // 等待用户确认
-  COMPLETED
-}
-
-// 工作产物类型
-enum ProductType {
-  IMAGE
-  VIDEO
-  AUDIO
-  TEXT
-  JSON
-  CODE
-  STORYBOARD
-  SCRIPT
-  ASSET
-}
-
-// 会话模型
-model Session {
-  id        String        @id @default(uuid())
-  userId    String
-  user      User          @relation(fields: [userId], references: [id])
-  agentId   String        // 使用的 Agent 类型
-  status    SessionStatus @default(ACTIVE)
-  metadata  Json?         // 会话元数据
-
-  // 群聊支持
-  isGroupChat Boolean     @default(false)
-  groupAgents Json?       // 参与的Agent类型列表
-  projectId   String?     // 关联项目
-
-  // 任务会话状态
-  taskSessionState Json?       // 存储当前活跃的任务状态
-  lastActiveTaskId String?     // 最后活跃的Task ID
-
-  createdAt  DateTime     @default(now())
-  updatedAt  DateTime     @updatedAt
-
-  contexts  Context[]
-  summaries ContextSummary[]
-  tasks     Task[]
-
-  @@index([userId])
-  @@index([agentId])
-  @@index([status])
-  @@index([projectId])
-}
-
-// 上下文/消息模型
-model Context {
-  id          String    @id @default(uuid())
-  sessionId   String
-  session     Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  employeeId  String?   // 消息所属 Agent/职员 ID（agentType）
-  role        String    // "user" | "assistant" | "system"
-  content     String    @db.Text
-  tokens      Int?      // token 计数
-  toolCalls   Json?     // 工具调用记录
-  attachments Json?     // 附件信息 [{id, fileName, sha256, url}]
-  createdAt   DateTime  @default(now())  // 服务器时间戳
-  order       BigInt    @default(0)       // 排序序号（时间戳+序号，确保时序）
-
-  // 群聊支持
-  projectId      String?  // 关联项目
-
-  // 新增：上下文标记
-  isContextMessage Boolean @default(true)  // 是否参与Agent上下文（false=只记录不参与推理）
-  taskId           String?                 // 关联任务ID
-  metadata         Json?                   // 扩展数据
+  // 关联
+  session       Session   @relation(fields: [sessionId], references: [id])
+  product       WorkProduct? @relation(fields: [productId], references: [id])
 
   @@index([sessionId])
   @@index([createdAt])
-  @@index([order])
-  @@index([employeeId])
-  @@index([projectId])
-  @@index([isContextMessage])  // 新增索引
 }
 
-// 上下文压缩摘要
-model ContextSummary {
-  id          String    @id @default(uuid())
-  sessionId   String
-  session     Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  summary     String    @db.Text
-  tokenCount  Int
-  createdAt   DateTime  @default(now())
-
-  @@index([sessionId])
-}
-
-// 工作产物模型 - 独立存储项目产出
+// WorkProduct - 工作产出物
 model WorkProduct {
-  id              String        @id @default(uuid())
-  projectId       String        // 归属项目
-  sessionId       String        // 归属会话
+  id            String    @id @default(uuid())
+  sessionId     String
+  taskId        String?
+  agentType     String    // 产生此产出的 Agent 类型
 
-  // 产物元数据
-  type            ProductType   // IMAGE, VIDEO, TEXT, JSON, CODE, STORYBOARD, etc.
-  name            String
-  description     String?
-  mimeType        String?
+  // 产出类型
+  type          ProductType
+  name          String
+  content       String?   @db.Text  // 小内容直接存
+  storageKey    String?   // 大内容存 OSS/S3
 
-  // 内容存储（混合策略）
-  content         String?       @db.Text  // 小内容直接存
-  storageKey      String?       // 大内容存本地，用 key 引用
+  // 元数据
+  metadata      Json?
 
-  // 关联信息
-  sourceMessageId String?       // 触发该产物的消息ID
-  creatorAgentId  String?       // 创建者Agent类型
+  // 验收状态
+  acceptanceStatus String? // PENDING, APPROVED, REJECTED
+  acceptanceNote   String?
 
-  // 扩展信息
-  metadata        Json?
+  createdAt     DateTime  @default(now())
 
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  // 关联
+  session       Session   @relation(fields: [sessionId], references: [id])
+  task          Task?     @relation(fields: [taskId], references: [id])
+  contexts      Context[]
 
-  @@index([projectId])
   @@index([sessionId])
   @@index([type])
 }
 
-// 角色模型 - 存储角色设定，确保跨章节一致性
-model Character {
-  id           String   @id @default(uuid())
-  projectId    String
-  name         String
-  age          Int?
-  gender       String?
-  appearance   String   @db.Text
-  personality  String[]
-  role         String   // 主角/配角/反派/酱油/龙套
-  relationships Json?
-  imageUrl     String?
-  prompt       String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+// ContextSummary - 上下文摘要（长会话压缩）
+model ContextSummary {
+  id          String   @id @default(uuid())
+  sessionId   String
+  session     Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  summary     String    @db.Text
+  tokenCount  Int?
+  createdAt   DateTime @default(now())
 
-  @@index([projectId])
+  @@index([sessionId])
 }
 
-// 用户确认记录 - 追踪每个阶段的用户确认状态
-model Confirmation {
-  id          String   @id @default(uuid())
-  projectId   String
-  draftId     String?  // 关联的草稿ID
-  stage       String   // characters, storyboard, image, video
-  status      String   // PENDING, APPROVED, REJECTED, REVISION
-  data        Json?
-  feedback    String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+// ============================================
+// 附件系统
+// ============================================
 
-  // 关联的草稿
-  draft       Draft?   @relation(fields: [draftId], references: [id])
+// Attachment - 附件存储
+model Attachment {
+  id            String    @id @default(uuid())
+  sessionId     String
+  uploaderId    String    // 上传用户
 
-  @@index([projectId])
-  @@index([stage])
-  @@index([draftId])
+  // 文件信息
+  fileName      String
+  fileType      String    // mime type
+  fileSize      Int       // 字节
+  storageType   String    // LOCAL, S3, OSS
+  storagePath   String    // 存储路径
+
+  // 智能分片
+  isSharded     Boolean   @default(false)
+  shardCount    Int       @default(0)
+
+  // 状态
+  status        String    @default("PENDING") // PENDING, PROCESSING, READY, FAILED
+
+  // 元数据
+  metadata      Json?     // { width, height, duration, pages }
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // 关联
+  session       Session   @relation(fields: [sessionId], references: [id])
+  shards        AttachmentShard[]
+
+  @@index([sessionId])
 }
 
-// 草稿/待确认产出物 - Agent 输出先落库，用户确认后才写入正式表
-model Draft {
-  id          String   @id @default(uuid())
-  projectId   String
-  stage       String   // 阶段：character_analysis, storyboard, image_generation, video_generation
-  status      String   @default("DRAFT") // DRAFT, CONFIRMED, REJECTED, REVISED
+// AttachmentShard - 附件分片
+model AttachmentShard {
+  id              String    @id @default(uuid())
+  attachmentId    String
 
-  // 产出物内容
-  data        Json     // 结构化数据：角色列表、分镜列表等
-  summary     String?  // 摘要描述（用于展示）
+  // 分片信息
+  index           Int       // 分片序号
+  content         String?   @db.Text  // 小内容直接存
+  storageKey      String?   // 大内容存存储服务
 
-  // 用户修改记录
-  userModifications Json?
+  // 语义信息
+  summary         String?   // 分片摘要
+  keywords        String[]  // 关键词
 
-  // 关联的确认记录
-  confirmations Confirmation[]
+  createdAt       DateTime  @default(now())
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  // 关联
+  attachment      Attachment @relation(fields: [attachmentId], references: [id])
 
-  @@index([projectId])
-  @@index([stage])
-  @@index([status])
+  @@index([attachmentId])
+}
+
+// ============================================
+// 会话恢复与离线支持
+// ============================================
+
+// SessionSnapshot - Session 恢复快照
+model SessionSnapshot {
+  id            String    @id @default(uuid())
+  sessionId     String
+
+  // 快照数据
+  contextData   Json      // 上下文摘要
+  taskState     Json      // 任务状态快照
+  agentStates   Json      // Agent 状态快照
+
+  // 恢复信息
+  recoveryPoint String    // 恢复点标识
+  createdAt     DateTime  @default(now())
+
+  @@index([sessionId])
+  @@index([recoveryPoint])
+}
+
+// TaskExecutionLog - 任务执行日志（用于恢复）
+model TaskExecutionLog {
+  id            String    @id @default(uuid())
+  taskId        String
+  sessionId     String
+
+  // 执行步骤
+  step          Int       // 步骤序号
+  action        String    // 执行的动作
+  input         Json?     // 输入数据
+  output        Json?     // 输出数据
+  status        String    // PENDING, SUCCESS, FAILED
+
+  createdAt     DateTime  @default(now())
+
+  @@index([taskId])
+  @@index([sessionId])
+}
+
+// ============================================
+// 领域知识系统
+// ============================================
+
+// DomainKnowledge - 领域知识
+model DomainKnowledge {
+  id            String    @id @default(uuid())
+  domain        String    @unique  // 领域标识，如 "video_generation"
+  name          String
+  description   String?
+
+  // 知识内容
+  knowledge     String    @db.Text  // JSON 格式的知识
+
+  // 分析结果
+  analysis      String?   @db.Text  // 领域分析结果
+
+  // 状态
+  status        String    @default("PENDING") // PENDING, ANALYZING, READY, FAILED
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([domain])
 }
