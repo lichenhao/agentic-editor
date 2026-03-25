@@ -1,0 +1,85 @@
+version: '3.9'
+
+services:
+  # PostgreSQL - 主数据库
+  postgres:
+    image: postgres:16-alpine
+    container_name: agentic-postgres
+    environment:
+      POSTGRES_USER: agentic
+      POSTGRES_PASSWORD: agentic_secret
+      POSTGRES_DB: agentic_editor
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./src/db/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentic -d agentic_editor"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis - 缓存和状态
+  redis:
+    image: redis:7-alpine
+    container_name: agentic-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ClickHouse - 时序数据
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: agentic-clickhouse
+    environment:
+      CLICKHOUSE_DB: agentic_editor
+      CLICKHOUSE_USER: agentic
+      CLICKHOUSE_PASSWORD: agentic_secret
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  # Agent Harness API 服务
+  app:
+    build: .
+    container_name: agentic-app
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://agentic:agentic_secret@postgres:5432/agentic_editor
+      REDIS_URL: redis://redis:6379
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: agentic
+      CLICKHOUSE_PASSWORD: agentic_secret
+      JWT_SECRET: your-secret-key-change-in-production
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      NODE_ENV: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_started
+    volumes:
+      - ./src:/app/src
+      - ./workspace:/workspace
+    working_dir: /app
+
+volumes:
+  postgres_data:
+  redis_data:
+  clickhouse_data:

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/Users/ryota/works/agentic-editor/docker-compose.yml:*)",
+      "Bash(/Users/ryota/works/agentic-editor/.env.example:*)"
+    ]
+  }
+}
