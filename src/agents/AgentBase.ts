@@ -1,8 +1,7 @@
-import { Anthropic } from '@anthropic-ai/sdk';
+import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config/index.js';
 import { Agent, AgentMetrics, ContextMessage } from '../domain/entities/index.js';
 import { ToolRegistry } from '../tools/ToolRegistry.js';
-import { v4 as uuidv4 } from 'uuid';
 
 export interface AgentExecutionContext {
   threadId: string;
@@ -30,8 +29,12 @@ export abstract class AgentBase {
     protected agent: Agent,
     protected tenantId: string
   ) {
+    const apiKey = config.anthropicApiKey || process.env.ANTHROPIC_API_KEY;
+    const baseUrl = config.anthropicApiUrl || process.env.ANTHROPIC_BASE_URL;
+
     this.client = new Anthropic({
-      apiKey: config.anthropicApiKey || process.env.ANTHROPIC_API_KEY,
+      apiKey: apiKey,
+      baseURL: baseUrl,
     });
     this.toolRegistry = new ToolRegistry();
   }
@@ -47,22 +50,21 @@ export abstract class AgentBase {
     inputTokens: number;
     outputTokens: number;
   }> {
-    const startTime = Date.now();
-
-    const llmMessages = messages.map(msg => ({
-      role: msg.role,
-      content: msg.content,
-    }));
+    // Filter messages to only user and assistant roles (Claude API limitation)
+    const llmMessages = messages
+      .filter(msg => msg.role === 'user' || msg.role === 'assistant')
+      .map(msg => ({
+        role: msg.role as 'user' | 'assistant',
+        content: msg.content,
+      }));
 
     const response = await this.client.messages.create({
       model: 'claude-sonnet-4-6',
       max_tokens: 4096,
       system: systemPrompt || this.agent.systemPrompt,
-      messages: llmMessages,
+      messages: llmMessages as any,
       tools: this.toolRegistry.getToolDefinitions(),
     });
-
-    const durationMs = Date.now() - startTime;
 
     // Extract text content and tool calls
     let content = '';
@@ -163,16 +165,16 @@ export abstract class AgentBase {
 
 // Factory for creating agents
 export class AgentFactory {
-  static createAgent(agent: Agent): AgentBase {
+  static createAgent(agent: Agent, tenantId: string): AgentBase {
     // Import here to avoid circular dependency
     switch (agent.role) {
       case 'supervisor':
-        return new (await import('./SupervisorAgent.js')).SupervisorAgent(agent, agent.tenantId);
+        return new (require('./SupervisorAgent.js')).SupervisorAgent(agent, tenantId);
       case 'specialist':
       case 'spec-skill':
-        return new (await import('./SpecialistAgent.js')).SpecialistAgent(agent, agent.tenantId);
+        return new (require('./SpecialistAgent.js')).SpecialistAgent(agent, tenantId);
       default:
-        return new (await import('./SpecialistAgent.js')).SpecialistAgent(agent, agent.tenantId);
+        return new (require('./SpecialistAgent.js')).SpecialistAgent(agent, tenantId);
     }
   }
 }

@@ -7,21 +7,22 @@ const configSchema = z.object({
   clickhouseUrl: z.string().default('http://localhost:8123'),
   clickhouseUser: z.string().default('agentic'),
   clickhousePassword: z.string().default('agentic_secret'),
-  
+
   // JWT
   jwtSecret: z.string().default('dev-secret-change-in-production'),
-  
+
   // Claude API
   anthropicApiKey: z.string().optional(),
-  
+  anthropicApiUrl: z.string().optional(),
+
   // App
   port: z.coerce.number().default(3000),
   nodeEnv: z.enum(['development', 'production', 'test']).default('development'),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
-  
+
   // OpenTelemetry
   otelExporterOtlpEndpoint: z.string().optional(),
-  
+
   // Workspace
   workspacePath: z.string().default('/workspace'),
 });
@@ -36,7 +37,7 @@ function loadConfig(): Config {
     const normalizedKey = key.toLowerCase().replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
     env[normalizedKey] = value;
   }
-  
+
   return configSchema.parse(env);
 }
 

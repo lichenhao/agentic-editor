@@ -1,4 +1,4 @@
-import { Pool, PoolClient } from 'pg';
+import { Pool, PoolClient as PgPoolClient } from 'pg';
 import Redis from 'ioredis';
 import { config } from '../config/index.js';
 
@@ -50,7 +50,7 @@ export async function execute(text: string, params?: any[]): Promise<number> {
   return result.rowCount || 0;
 }
 
-export async function transaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+export async function transaction<T>(fn: (client: PgPoolClient) => Promise<T>): Promise<T> {
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
@@ -76,5 +76,7 @@ export async function closeDb(): Promise<void> {
   }
 }
 
-export { Pool, PoolClient } from 'pg';
+// Re-export with alias for compatibility
+export type PoolClient = PgPoolClient;
+export { Pool } from 'pg';
 export { Redis } from 'ioredis';

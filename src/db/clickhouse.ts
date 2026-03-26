@@ -1,11 +1,11 @@
-import { ClickHouse } from '@clickhouse/client';
+import { createClient, ClickHouseClient } from '@clickhouse/client';
 import { config } from '../config/index.js';
 
-let client: ClickHouse | null = null;
+let client: ClickHouseClient | null = null;
 
-export function getClickHouse(): ClickHouse {
+export function getClickHouse(): ClickHouseClient {
   if (!client) {
-    client = new ClickHouse({
+    client = createClient({
       url: config.clickhouseUrl,
       username: config.clickhouseUser,
       password: config.clickhousePassword,
@@ -21,22 +21,18 @@ export async function clickHouseQuery<T = any>(query: string): Promise<T[]> {
     format: 'JSONEachRow',
   });
 
-  const rows: T[] = [];
-  for await (const row of result.stream()) {
-    rows.push(JSON.parse(row.text) as T);
-  }
-  return rows;
+  // Use the JSON method for simpler parsing
+  const data = await result.json();
+  return (data as any[]) || [];
 }
 
 export async function clickHouseInsert(
   table: string,
   data: Record<string, any>[]
 ): Promise<void> {
-  const values = data.map(row => JSON.stringify(row)).join('\n');
-
   await getClickHouse().insert({
     table,
-    values,
+    values: data,
     format: 'JSONEachRow',
   });
 }
@@ -48,4 +44,4 @@ export async function closeClickHouse(): Promise<void> {
   }
 }
 
-export { ClickHouse } from '@clickhouse/client';
+export { ClickHouseClient } from '@clickhouse/client';

@@ -2,7 +2,14 @@
   "permissions": {
     "allow": [
       "Bash(/Users/ryota/works/agentic-editor/docker-compose.yml:*)",
-      "Bash(/Users/ryota/works/agentic-editor/.env.example:*)"
+      "Bash(/Users/ryota/works/agentic-editor/.env.example:*)",
+      "Bash(npm install:*)",
+      "Bash(npx tsc:*)",
+      "Bash(docker ps:*)",
+      "Bash(docker run:*)",
+      "Bash(docker exec:*)",
+      "Bash(lsof -ti:3000)",
+      "Bash(xargs kill:*)"
     ]
   }
 }
